@@ -32,8 +32,8 @@ retention with an acquisition-cohort matrix — then names the 683 accounts wort
 | Granularity | One row per product line per invoice |
 
 **The dataset is not committed to this repository.** The notebook downloads it from UCI on
-first run, extracts it to `data/raw/`, and never modifies it afterwards. UCI's throughput
-varies a lot — the same download measured 31 seconds on one run and several minutes on
+first run, extracts it to `data/raw/`, and never modifies it afterwards.  
+UCI's throughput varies a lot — the same download measured 31 seconds on one run and several minutes on
 another, so allow time for it.
 
 Columns: `Invoice`, `StockCode`, `Description`, `Quantity`, `InvoiceDate`, `Price`,
