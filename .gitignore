@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+*.log
+
+# Source data is NOT committed - it is 45 MB from UCI and the notebook downloads
+# it on first run. The dataset link is in the README.
+data/raw/
+data/*.xlsx
+data/*.zip
+data/online_retail_II.csv
+
+# Generated outputs (reproducible by re-running the notebook)
+outputs/figures/
