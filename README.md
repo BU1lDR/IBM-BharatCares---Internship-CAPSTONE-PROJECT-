@@ -1,7 +1,7 @@
 # Retail Customer Segmentation & Sales Analysis
 
-**Capstone project — IBM SkillsBuild Data Analytics with AI Academic Internship Programme**
-Conducted by BharatCares in association with AICTE
+**Capstone project — IBM SkillsBuild Data Analytics with AI Academic Internship Programme**  
+Conducted by BharatCares in association with AICTE  
 Submitted by **Aryan Verma**
 
 An end-to-end analysis of 1,067,371 transaction lines from a UK online gift retailer,
