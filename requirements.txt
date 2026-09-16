@@ -1,0 +1,25 @@
+# Retail Customer Segmentation & Sales Analysis
+# Aryan Verma - IBM SkillsBuild Data Analytics with AI Academic Internship Programme
+# BharatCares in association with AICTE
+#
+# Install everything with:   pip install -r requirements.txt
+#
+# Lower bounds are the oldest versions the notebook's API usage is safe on.
+# The comment after each line records the version this project was verified with,
+# on Python 3.14.6 / Windows 11.
+
+# --- Core analysis -----------------------------------------------------------
+pandas>=2.2                # verified 3.0.5   loading, cleaning, groupby, cohort pivots
+numpy>=1.26                # verified 2.5.3   vectorised maths, log1p transforms
+matplotlib>=3.8            # verified 3.11.2  every chart in the notebook
+scikit-learn>=1.4          # verified 1.9.1   KMeans, StandardScaler, silhouette_score
+openpyxl>=3.1              # verified 3.1.5   reads the .xlsx source workbook
+
+# --- Notebook environment ----------------------------------------------------
+notebook>=7.0              # verified 7.6.2   provides the `jupyter notebook` command
+ipykernel>=6.29            # verified 7.3.0   the Python kernel the notebook runs on
+
+# --- Report generation (optional) --------------------------------------------
+# Needed only to regenerate AryanVerma_ProjectReport.docx via tools/build_report.py.
+# The analysis notebook runs without it.
+python-docx>=1.1           # verified 1.2.0
