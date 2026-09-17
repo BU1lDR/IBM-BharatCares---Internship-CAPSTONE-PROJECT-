@@ -18,6 +18,7 @@ already written outputs/facts.json and outputs/figures/*.png.
 import json
 import sys
 from datetime import date
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 try:
@@ -29,6 +30,11 @@ try:
     from docx.shared import Cm, Inches, Pt, RGBColor
 except ModuleNotFoundError:                                     # pragma: no cover
     sys.exit("python-docx is not installed. Run:  pip install python-docx")
+
+try:
+    DOCX_VERSION = version("python-docx")
+except PackageNotFoundError:                                    # pragma: no cover
+    DOCX_VERSION = "-"
 
 ROOT = Path(__file__).resolve().parents[1]
 FACTS_PATH = ROOT / "outputs" / "facts.json"
@@ -76,6 +82,13 @@ TOP_PRODUCTS = payload["top_products"]
 COUNTRIES = payload["countries"]
 TOP_RETURNED = payload["top_returned"]
 COHORTS = payload["cohort_quality"]
+
+# Counts that describe the deliverables themselves are measured here, so that
+# adding a cell or a chart cannot leave this document quoting a stale number.
+_nb = json.loads((ROOT / NOTEBOOK).read_text(encoding="utf-8"))
+NB_CELLS = len(_nb["cells"])
+NB_CODE_CELLS = sum(1 for c in _nb["cells"] if c["cell_type"] == "code")
+MONTHS_OBSERVED = len(MONTHLY)
 
 missing_figs = [n for n in FIGS.values() if not (FIG_DIR / n).exists()]
 if missing_figs:
@@ -373,7 +386,7 @@ RICHEST_CLUSTER = max(CLUSTERS, key=lambda r: r["TotalRevenue"])
 # instead of assuming it is the second row of the most-returned table.
 SECOND_RETURNED = next(
     (row for row in TOP_RETURNED
-     if str(row["Description"]).lower() == F["second_cancel_product"].lower()),
+     if str(row["Product"]).lower() == F["second_cancel_product"].lower()),
     TOP_RETURNED[1],
 )
 
@@ -388,9 +401,86 @@ XMAS_GAP = F["nonxmas_cohort_m3"] / F["xmas_cohort_m3"]
 TOP1_LOSS = F["top1pct_share"]
 CLEAN_ROWS_DROPPED = F["raw_rows"] - F["sales_rows"]
 CATALOGUE_SHARE = len(TOP_PRODUCTS) / F["product_count"] * 100
+TROUGH_SHARE = F["trough_month_revenue"] / F["peak_month_revenue"] * 100
 PIPELINE_PCT = (F["seg_promising_rev_pct"] + F["seg_new_rev_pct"]
                 + F["seg_needs_attention_rev_pct"])
 BUILD_DATE = date.today().strftime("%d %B %Y")
+
+# Defined here rather than in section 14 so the executive summary can quote how
+# many there are without that count being maintained by hand in two places.
+LIMITATIONS = [
+    f"**Attribution gap.** {pct(F['anonymous_rows_pct'])} of clean sales lines "
+    f"({num(F['anonymous_rows'])}), carrying {pct(F['anonymous_revenue_pct'])} of "
+    f"clean revenue ({gbp(F['anonymous_revenue'])}), have no customer ID - both "
+    f"shares measured on the same cleaned base. Every customer-level result is "
+    f"computed on the identified {pct(F['id_coverage_pct'])} of revenue only. If "
+    f"guest orders are disproportionately one-off purchases, the true repeat rate is "
+    f"lower than reported here; if they are unrecognised repeat buyers, several "
+    f"segments are undercounted. The data cannot distinguish the two cases.",
+
+    "**Revenue, not profit.** The dataset has no cost of goods. A low-margin "
+    "bestseller and a high-margin niche line are indistinguishable in this analysis, "
+    "so no pricing or product-mix decision should rest on it alone.",
+
+    f"**The CLV projection is demonstrably biased upward, and section 10.1 shows by "
+    f"how much.** Summed across the base it is {F['proj_vs_actual_ratio']:.2f}x "
+    f"actual second-year revenue, and it ranks a dormant segment above Champions. It "
+    f"carries no churn probability, so it should be read as an aggregate upper bound - "
+    f"the constant-rate assumption is optimistic for a dormant account and conservative "
+    f"for an accelerating one, so it is not a ceiling on any single customer. BG/NBD "
+    f"plus a Gamma-Gamma spend model is the correct fix and is not done "
+    f"here; prioritisation in section 13 therefore rests on historical value.",
+
+    "**Censoring at both ends of the cohort matrix.** Cohorts acquired late in the "
+    "window have not had time to show a retention curve, so blank cells on the right "
+    "mean *not yet observable*, not zero. At the other end, the first cohort is "
+    "left-censored: customers who predate the log appear as newly acquired in "
+    "December 2009. Section 11.1 quantifies that bias and reports corrected figures.",
+
+    f"**`InvoiceDate` records processing, not intent.** All {F['saturday_orders']} "
+    f"Saturday orders in the {MONTHS_OBSERVED}-month window fall on one date, so the "
+    f"timestamp "
+    f"reflects back-office keying rather than customer behaviour. No conclusion about "
+    f"*when customers want to shop* can be drawn from the hour and weekday columns.",
+
+    "**Quintile scoring is relative.** An RFM score of 5 means “top fifth of "
+    "this base”, not “good” in absolute terms. Scores are not "
+    "comparable across a different customer base or a different time window.",
+
+    f"**k = {F['k_chosen']} is a judgement call.** The silhouette metric preferred "
+    f"k = {F['silhouette_best_k']}. Four clusters were chosen for operational "
+    f"interpretability, and the metric cost of that choice is reported in section 9.1 "
+    f"rather than hidden.",
+
+    "**One retailer, one category, 2009-2011.** A UK giftware wholesaler in the "
+    "post-financial-crisis period. The method transfers; these coefficients do not.",
+
+    "**Segments are descriptive, not causal.** Nothing here establishes that a "
+    "campaign *causes* a customer to return. A holdout test would be needed to claim "
+    "that, and this dataset contains no campaign data.",
+
+    f"**The Christmas retention gap rests on one season.** Excluding the left-censored "
+    f"December 2009 row also removes the only other December in the file, so the peak "
+    f"side of the {pct(F['xmas_cohort_m3'])}-versus-{pct(F['nonxmas_cohort_m3'])} "
+    f"comparison is {F['xmas_cohort_count']} cohorts ({F['xmas_cohort_names']}), "
+    f"{num(F['xmas_cohort_customers'])} customers, {F['xmas_cohort_retained_m3']} of "
+    f"whom reordered at month 3. Their month 3 falls in "
+    f"{F['xmas_m3_calendar_months']}, the February-March trough, so seasonal demand and "
+    f"customer quality are confounded and this data cannot separate them. Finding 7 is "
+    f"a hypothesis to test; recommendation 5 is written as a test rather than a "
+    f"decision.",
+
+    f"**The return rate depends on which credit notes count as returns.** The "
+    f"{pct(F['return_rate_pct'], 2)} figure counts customer returns of products and "
+    f"carriage only, so that its numerator and the gross-revenue denominator describe "
+    f"the same population. Including the administrative reversals - manual "
+    f"adjustments, Amazon fees, bank charges, discounts, samples - would give "
+    f"{pct(F['credit_note_value'] / F['sales_revenue'] * 100, 2)} on "
+    f"{gbp(F['credit_note_value'])}, but those stock codes are removed from the revenue "
+    f"base by cleaning step 7 and are not customers sending goods back. Both numbers "
+    f"appear in section 7.7; neither is the single true rate without saying which "
+    f"question is being asked.",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -439,8 +529,9 @@ table(
 
 para("", size=8)
 para(
-    "Every figure, table and number in this report is computed by the notebook "
-    "and read from `outputs/facts.json`. Nothing is transcribed by hand.",
+    "Every figure, table and result in this report is computed by the notebook and "
+    "read from `outputs/facts.json`; the software versions are read from the run "
+    "itself. The only hand-entered values are the wall-clock timings in section 16.",
     align=WD_ALIGN_PARAGRAPH.CENTER, size=9, colour=INK_MUTED, italic=True,
 )
 page_break()
@@ -493,8 +584,9 @@ para(
 
 para(
     f"The headline result is concentration. **{num(F['top20pct_customers'])} customers "
-    f"- 20% of the base - produce {pct(F['top20pct_share'])} of revenue, and the top "
-    f"1% ({num(F['top1pct_customers'])} customers) produce {pct(F['top1pct_share'])}.** "
+    f"- 20% of the base - produce {pct(F['top20pct_share'])} of identified revenue, "
+    f"and the top 1% ({num(F['top1pct_customers'])} customers) produce "
+    f"{pct(F['top1pct_share'])}.** "
     f"The mean customer is worth {gbp(F['mean_customer_revenue'], 0)} and the median "
     f"{gbp(F['median_customer_revenue'], 0)} - a ratio of "
     f"{MEAN_MEDIAN_RATIO:.1f}x - so any plan addressed to “the average customer” "
@@ -509,16 +601,18 @@ para(
     f"{gbp_m(F['seg_champions_revenue'])}, or {pct(F['seg_champions_rev_pct'])} of "
     f"identified revenue.** A K-Means clustering run on the same log-scaled RFM "
     f"features, given no rules at all, reproduces that structure: every one of the "
-    f"nine segments sends at least 60% of its members to a single cluster. Two "
-    f"independent methods agreeing is evidence the structure is in the data rather "
+    f"nine segments sends at least 60% of its members to a single cluster, and "
+    f"{pct(F['customer_concordance_pct'])} of customers land in their own segment's "
+    f"modal cluster. Two methods that read the same features but draw their boundaries "
+    f"differently agreeing is evidence the structure is in the data rather "
     f"than in the thresholds."
 )
 
 para(
     f"The actionable number is smaller and more specific. "
     f"**{num(F['at_risk_customers'])} customers who have already spent "
-    f"{gbp(F['at_risk_revenue'])} ({pct(F['at_risk_rev_pct'])} of revenue) have "
-    f"stopped ordering.** They are not low-value customers who drifted off; they are "
+    f"{gbp(F['at_risk_revenue'])} ({pct(F['at_risk_rev_pct'])} of identified "
+    f"revenue) have stopped ordering.** They are not low-value customers who drifted off; they are "
     f"proven buyers who went quiet, and they are the only group with a large, "
     f"individually identified prize attached to contacting them."
 )
@@ -534,8 +628,9 @@ para(
     f"{num(F['worst_net_mover_net_rank'])}**; {F['net_rank_movers']} of the top ten "
     f"products change position once cancellations are netted off. And customers "
     f"acquired in the Christmas peak retain at {pct(F['xmas_cohort_m3'])} by month 3 "
-    f"against {pct(F['nonxmas_cohort_m3'])} for every other month - the season that "
-    f"produces the revenue produces the worst customers."
+    f"against {pct(F['nonxmas_cohort_m3'])} for every other month - on "
+    f"{F['xmas_cohort_count']} peak cohorts from a single season, so a lead to test "
+    f"rather than a settled fact."
 )
 
 table(
@@ -551,9 +646,9 @@ para(
     "What this report does not do is equally deliberate. The dataset has no cost of "
     "goods, so every value here is revenue and not margin; it contains no campaign "
     "data, so nothing here shows that contacting a customer *causes* a return; and "
-    "the timestamp records back-office keying rather than customer intent, so it "
-    "cannot say when customers prefer to shop. Section 14 states all nine "
-    "limitations in full."
+    f"the timestamp records back-office keying rather than customer intent, so it "
+    f"cannot say when customers prefer to shop. Section 14 states all "
+    f"{len(LIMITATIONS)} limitations in full."
 )
 page_break()
 
@@ -643,7 +738,7 @@ table(
         ["Donated by", "Dr Daqing Chen, London South Bank University"],
         ["Licence", "Creative Commons Attribution 4.0 International (CC BY 4.0)"],
         ["Format", "Single .xlsx workbook, two sheets: Year 2009-2010 and Year 2010-2011"],
-        ["Size", "approx. 45 MB compressed download"],
+        ["Size", "45.6 MB download (a stored .zip holding one .xlsx of the same size)"],
         ["Rows", f"{num(F['raw_rows'])} across both sheets"],
         ["Period", f"{pretty_date(F['date_min'])} to {pretty_date(F['date_max'])}"],
         ["Granularity", "One row per product line per invoice"],
@@ -700,8 +795,9 @@ for text in [
     f"**Six `A`-prefixed invoices carry {gbp(F['invoice_prefix_a_revenue'])} of "
     f"bad-debt adjustments.** The common “drop invoices starting with C” "
     f"recipe leaves every penny of that in the revenue line.",
-    f"**{num(F['zero_price_rows'])} rows have a zero or negative price**, including "
-    f"every row with a blank description.",
+    f"**{num(F['zero_price_rows'])} rows are priced at zero and "
+    f"{num(F['negative_price_rows'])} carry a negative price**, the zero-priced set "
+    f"including every row with a blank description.",
     f"**Non-product stock codes are mixed into the product lines**: postage (POST, "
     f"DOT), carriage (C2, C3), manual corrections (M), bank charges, Amazon fees, "
     f"samples, gift vouchers and test records.",
@@ -718,17 +814,21 @@ h1("4.  Tools and technologies")
 table(
     ["Tool", "Version used", "Role in this project"],
     [
-        ["Python", "3.14.6", "Language for the entire analysis"],
-        ["Jupyter Notebook", "7.6.2", "Executable document holding code, charts and narrative"],
-        ["pandas", "3.0.5", "Loading, cleaning, joining, grouping, cohort pivots"],
-        ["NumPy", "2.5.3", "Vectorised arithmetic and the log1p transform before clustering"],
-        ["Matplotlib", "3.11.2", "All 14 figures, drawn on a single explicit chart theme"],
-        ["scikit-learn", "1.9.1", "StandardScaler, KMeans, silhouette_score"],
-        ["openpyxl", "3.1.5", "Reads the two sheets of the source .xlsx workbook"],
-        ["python-docx", "1.2.0", "Generates this report from outputs/facts.json"],
+        ["Python", F["env_python"], "Language for the entire analysis"],
+        ["Jupyter Notebook", F["env_notebook"],
+         "Executable document holding code, charts and narrative"],
+        ["pandas", F["env_pandas"], "Loading, cleaning, joining, grouping, cohort pivots"],
+        ["NumPy", F["env_numpy"],
+         "Vectorised arithmetic and the log1p transform before clustering"],
+        ["Matplotlib", F["env_matplotlib"],
+         f"All {len(FIGS)} figures, drawn on a single explicit chart theme"],
+        ["scikit-learn", F["env_sklearn"], "StandardScaler, KMeans, silhouette_score"],
+        ["openpyxl", F["env_openpyxl"], "Reads the two sheets of the source .xlsx workbook"],
+        ["python-docx", DOCX_VERSION, "Generates this report from outputs/facts.json"],
         ["Git / GitHub", "-", "Version control and submission repository"],
     ],
-    "Software stack. Exact pinned lower bounds are in requirements.txt.",
+    "Software stack. Every version is the one that actually produced these results, "
+ "read from the run itself; the lower bounds are in requirements.txt.",
     widths=[1.35, 1.1, 3.7],
     font_size=9.5,
     numeric_from=99,
@@ -747,13 +847,15 @@ para(
 
 h2("Repository layout")
 for text in [
-    f"`{NOTEBOOK}` - the complete analysis: 75 cells, all executed, no errors.",
+    f"`{NOTEBOOK}` - the complete analysis: {NB_CELLS} cells "
+    f"({NB_CODE_CELLS} code), all executed, no errors.",
     "`requirements.txt` - dependencies with verified versions.",
     "`AryanVerma_ProjectReport.docx` - this report.",
     "`README.md` - overview, dataset link, setup and run instructions.",
     "`tools/build_report.py` - the generator that produces this document.",
     "`outputs/facts.json` - every computed number, dumped by the notebook.",
-    "`outputs/figures/` - the 14 exported charts (regenerated by a notebook run).",
+    f"`outputs/figures/` - the {len(FIGS)} exported charts (regenerated by a "
+    f"notebook run).",
     "`data/raw/` - the downloaded source workbook (not committed; downloaded on first run).",
 ]:
     bullet(text)
@@ -793,11 +895,14 @@ bullet(
     f"**`sales_id`** - the subset with a known customer ID: {num(F['sales_id_rows'])} "
     f"rows, {gbp(F['sales_id_revenue'])}, which is {pct(F['id_coverage_pct'])} of "
     f"clean revenue. Used for RFM, K-Means, CLV and cohorts, because all four need "
-    f"an identified customer."
+    f"an identified customer, and therefore the base every customer-level share in "
+    f"this report is measured against."
 )
 para(
-    f"Cancellations ({num(F['cancellation_rows'])} rows) and stock write-offs "
-    f"({num(F['writeoff_rows'])} rows) are **set aside rather than deleted**, so "
+    f"Cancellations ({num(F['cancellation_rows_set_aside'])} rows - the "
+    f"{num(F['cancellation_rows'])} in the raw file less the exact duplicates step 2 "
+    f"removed) and stock write-offs ({num(F['writeoff_rows_set_aside'])} rows) are "
+    f"**set aside rather than deleted**, so "
     f"section 7.7 can analyse them instead of losing them."
 )
 
@@ -826,8 +931,9 @@ para(
 
 h2("5.4  K-Means clustering")
 para(
-    "The same three features are clustered without any rules, as an independent "
-    "check. Because recency, frequency and monetary value are all heavily "
+    "The same three features are clustered without any rules, as a check on whether "
+    "the segment boundaries are a property of the data or of the chosen thresholds. "
+    "Because recency, frequency and monetary value are all heavily "
     "right-skewed, each is `log1p`-transformed and then standardised with "
     "`StandardScaler`; skipping either step lets the single largest customer dominate "
     "the Euclidean distance. `k` is scanned from 2 to 8 with inertia and silhouette "
@@ -915,15 +1021,15 @@ page_break()
 h1("7.  Exploratory analysis")
 
 h2("7.1  Revenue over time")
-figure("01_revenue_trend", "Monthly revenue across the 25-month window, with the "
-                           "September-November peak marked.")
+figure("01_revenue_trend", f"Monthly revenue across the {MONTHS_OBSERVED}-month "
+                           f"window, with the September-November peak marked.")
 para(
     f"Revenue is strongly seasonal. **September to November averages "
     f"{gbp(F['q4_monthly_avg'])} a month against {gbp(F['rest_monthly_avg'])} for "
     f"every other month - a {pct(F['q4_uplift_pct'])} uplift.** The peak month is "
     f"{pretty_month(F['peak_month'])} at {gbp(F['peak_month_revenue'])}; the trough is "
-    f"{pretty_month(F['trough_month'])} at {gbp(F['trough_month_revenue'])}, which is less than "
-    f"35% of the peak. Comparing the two like-for-like trading years, revenue grew "
+    f"{pretty_month(F['trough_month'])} at {gbp(F['trough_month_revenue'])}, which is "
+    f"{pct(TROUGH_SHARE)} of the peak. Comparing the two like-for-like trading years, revenue grew "
     f"{pct(F['yoy_growth_pct'])}, from {gbp(F['year1_revenue'])} to "
     f"{gbp(F['year2_revenue'])}."
 )
@@ -937,19 +1043,41 @@ h2("7.2  Where the growth came from")
 figure("02_new_vs_returning", "Monthly revenue split by whether the customer had "
                               "bought before.")
 para(
-    f"The growth is not coming from acquisition. **In the second year, "
+    f"Repeat buying dominates the revenue *level*. **In the second year - the twelve "
+    f"full months from {pretty_month(F['year2_first_month'])} to "
+    f"{pretty_month(F['year2_last_month'])}, the truncated final month excluded - "
     f"{pct(F['returning_share_year2_pct'])} of identified revenue came from customers "
-    f"acquired earlier**; new customers contributed the remaining "
-    f"{pct(NEW_SHARE_YEAR2)}. That single split reframes the whole analysis: the "
-    f"existing base is the growth engine, so losing part of it is more expensive than "
-    f"failing to add to it."
+    f"who had already ordered in an earlier month**; only {pct(NEW_SHARE_YEAR2)} came "
+    f"from customers in their very first month."
+)
+para(
+    f"That figure is a month-level flag, not a cohort split: a customer counts as "
+    f"returning in every month after the one they first appear in, including later "
+    f"months of the same year they were acquired. Read as \"the second year was carried "
+    f"by the customers we already had\" it would be wrong, so the same window is also "
+    f"split by **acquisition cohort**. Customers acquired before the second year began "
+    f"supplied {pct(F['preacquired_share_year2_pct'])} of its revenue and customers "
+    f"first acquired during it supplied {pct(F['newly_acquired_share_year2_pct'])}."
+)
+para(
+    f"The direction of the *growth* is the opposite of what the first figure suggests. "
+    f"Identified revenue rose from {gbp(F['year1_id_revenue'])} to "
+    f"{gbp(F['year2_id_revenue'])} - **{gbp(F['year2_id_growth'])}, "
+    f"{pct(F['year2_id_growth_pct'])}** - and that net movement is "
+    f"**{gbp(F['year2_revenue_from_new_cohorts'])} added by customers acquired during "
+    f"the year, against a {gbp(abs(F['year2_change_in_existing_base']))} decline in the "
+    f"base that already existed.** New acquisition did not top up a growing base; it "
+    f"covered a shrinking one. The existing base is still where the money is - more than "
+    f"four fifths of it - which is what makes the at-risk pool in section 8 expensive, "
+    f"but the case for defending it is that it is leaking, not that it is compounding."
 )
 
 h2("7.3  When orders are processed")
 figure("03_demand_heatmap", "Distinct invoices by weekday and hour. Saturday is "
                             "effectively empty; Sunday is not.")
 para(
-    f"**All {F['saturday_orders']} Saturday orders in 25 months fall on a single "
+    f"**All {F['saturday_orders']} Saturday orders in {MONTHS_OBSERVED} months fall "
+    f"on a single "
     f"date, {pretty_date(F['saturday_date'])}**, leaving "
     f"{F['saturdays_with_zero_orders']} of the {F['saturdays_in_window']} Saturdays "
     f"in the window at zero - while Sunday processes {num(F['sunday_orders'])} orders "
@@ -970,10 +1098,11 @@ figure("04_top_products", "The ten highest-revenue products, net of nothing - se
                           "section 7.7 for what changes when returns are netted off.")
 table(
     ["Product", "Revenue", "Units", "Orders", "% of revenue"],
-    [[row["Description"].title(), gbp(row["Revenue"]), num(row["Units"]),
+    [[row["Product"], gbp(row["Revenue"]), num(row["Units"]),
       num(row["Orders"]), pct(row["Revenue share %"], 2)]
      for row in TOP_PRODUCTS],
-    "Top ten products by merchandise revenue.",
+    f"Top ten products by merchandise revenue, out of {num(F['product_count'])} "
+ f"stock codes.",
     widths=[2.6, 0.95, 0.75, 0.7, 1.0],
     font_size=8.5,
 )
@@ -984,6 +1113,15 @@ para(
     f"expectation: ten products out of {num(F['product_count'])} is "
     f"{pct(CATALOGUE_SHARE, 2)} of the catalogue, so those ten are "
     f"**over-represented by {F['top10_concentration_ratio']:.1f}x**."
+)
+para(
+    f"Products are aggregated on `StockCode`, not on `Description`. The "
+    f"{num(F['product_count'])} merchandise codes carry "
+    f"{num(F['product_description_count'])} distinct descriptions, so the same "
+    f"physical product is spelled more than one way; grouping on the text splits one "
+    f"product's revenue across its spellings and, in this file, moves a genuine "
+    f"top-three line down to fourth place. Every rank in this section and in section "
+    f"7.7 is therefore a rank among {num(F['product_count'])} codes."
 )
 para(
     f"Revenue and volume are also not the same ranking. Only "
@@ -1032,10 +1170,25 @@ para(
 h2("7.7  Returns and cancellations")
 figure("06_return_rate", "Monthly return rate against the overall average.")
 para(
-    f"Returns total **{gbp(F['return_value'])} across {num(F['return_rows'])} lines - "
-    f"{pct(F['return_rate_pct'], 2)} of gross revenue**, taking "
-    f"{gbp_m(F['sales_revenue'])} down to a net {gbp_m(F['net_revenue'])}. "
-    f"{num(F['returning_customers'])} customers returned something at least once."
+    f"Customer returns total **{gbp(F['return_value'])} across "
+    f"{num(F['return_rows'])} lines - {pct(F['return_rate_pct'], 2)} of gross "
+    f"revenue**, taking {gbp_m(F['sales_revenue'])} down to a net "
+    f"{gbp_m(F['net_revenue'])}. {num(F['returning_customers'])} customers returned "
+    f"something at least once."
+)
+para(
+    f"A return rate is a ratio, so both sides of it have to count the same population, "
+    f"and getting that wrong here roughly doubles the answer. The credit notes set aside "
+    f"in cleaning step 3 come to {gbp(F['credit_note_value'])} across "
+    f"{num(F['credit_note_rows'])} lines, but {gbp(F['admin_reversal_value'])} of that - "
+    f"{num(F['admin_reversal_rows'])} lines - is administrative rather than a customer "
+    f"sending goods back: `MANUAL` adjustments, `AMAZONFEE`, bank charges, discounts, "
+    f"charity lines and samples. Cleaning step 7 removes exactly those stock codes from "
+    f"the revenue base, so counting them in the numerator while the denominator excludes "
+    f"them would divide one population by another. Including them would report "
+    f"{pct(F['credit_note_value'] / F['sales_revenue'] * 100, 2)} rather than "
+    f"{pct(F['return_rate_pct'], 2)}. They are real money and are itemised in the "
+    f"notebook, but they are not returns."
 )
 para(
     f"The aggregate rate hides the pattern. The monthly rate averages "
@@ -1049,7 +1202,7 @@ figure("07_top_returned", "The ten products with the largest returned value, wit
                           "each product's return rate.")
 table(
     ["Product", "Returned", "Sold", "Return rate", "Lines"],
-    [[row["Description"].title(), gbp(row["Returned"]), gbp(row["Sold"]),
+    [[row["Product"], gbp(row["Returned"]), gbp(row["Sold"]),
       pct(row["Return rate %"]), num(row["Lines"])]
      for row in TOP_RETURNED],
     "Most-returned products by value. A 100% rate on a single line is a cancelled "
@@ -1079,7 +1232,7 @@ para(
     f"**{F['net_rank_movers']} of the top ten products change position once returns "
     f"are netted off.** Any product report built on gross sales is materially wrong "
     f"at the top of the table. The most-returned table above shows the other half of "
-    f"the same event: {SECOND_RETURNED['Description'].lower()} carries "
+    f"the same event: {SECOND_RETURNED['Product'].lower()} carries "
     f"{gbp(SECOND_RETURNED['Returned'], 2)} returned against "
     f"{gbp(SECOND_RETURNED['Sold'], 2)} sold, a "
     f"{pct(SECOND_RETURNED['Return rate %'])} return rate over "
@@ -1090,7 +1243,7 @@ h2("7.8  How concentrated the customer base is")
 figure("08_pareto", "Cumulative share of revenue against cumulative share of "
                      "customers, ranked by spend.")
 table(
-    ["Customer group", "Customers", "Share of revenue"],
+    ["Customer group", "Customers", "Share of identified revenue"],
     [
         ["Top 1%", num(F["top1pct_customers"]), pct(F["top1pct_share"])],
         ["Top 5%", num(F["top5pct_customers"]), pct(F["top5pct_share"])],
@@ -1104,8 +1257,11 @@ table(
 )
 para(
     f"**{num(F['top20pct_customers'])} customers produce "
-    f"{pct(F['top20pct_share'])} of revenue, and {num(F['top1pct_customers'])} "
-    f"produce {pct(F['top1pct_share'])}.** The distribution behind that is extreme: "
+    f"{pct(F['top20pct_share'])} of identified revenue, and "
+    f"{num(F['top1pct_customers'])} produce {pct(F['top1pct_share'])}.** Both shares "
+    f"are measured against the {gbp(F['sales_id_revenue'])} carried by identified "
+    f"customers, not the {gbp(F['sales_revenue'])} total - as is every other "
+    f"customer-level share in this report. The distribution behind that is extreme: "
     f"the median customer is worth {gbp(F['median_customer_revenue'], 2)}, the mean "
     f"{gbp(F['mean_customer_revenue'], 2)} ({MEAN_MEDIAN_RATIO:.1f}x the median), and "
     f"the largest single customer {gbp(F['max_customer_revenue'], 2)}."
@@ -1126,7 +1282,7 @@ h1("8.  Customer segmentation - RFM")
 figure("09_rfm_segments", "The nine RFM segments: share of customers against share "
                           "of revenue.")
 table(
-    ["Segment", "Customers", "% of base", "Revenue", "% of revenue",
+    ["Segment", "Customers", "% of base", "Revenue", "% of identified revenue",
      "Avg recency (days)", "Avg orders", "Avg spend"],
     [[row["Segment"], num(row["Customers"]), pct(row["Customer %"]),
       gbp_compact(row["Revenue"]), pct(row["Revenue %"]),
@@ -1151,14 +1307,15 @@ para(
     f"At the other end, {num(F['seg_lost_customers'])} *Lost* and "
     f"{num(F['seg_hibernating_customers'])} *Hibernating* customers - "
     f"{pct(DEAD_CUSTOMER_PCT)} of the base between them - contribute "
-    f"{pct(DEAD_REVENUE_PCT)} of revenue. They are numerous and nearly worthless, "
+    f"{pct(DEAD_REVENUE_PCT)} of identified revenue. They are numerous and nearly worthless, "
     f"which is exactly why a base-wide campaign wastes most of its budget."
 )
 para(
     f"The urgent group is neither. **{num(F['seg_cannot_lose_them_customers'])} "
     f"customers in *Cannot lose them* and {num(F['seg_at_risk_customers'])} in *At "
     f"risk* - {num(F['at_risk_customers'])} accounts - have already spent "
-    f"{gbp(F['at_risk_revenue'])}, which is {pct(F['at_risk_rev_pct'])} of revenue, "
+    f"{gbp(F['at_risk_revenue'])}, which is {pct(F['at_risk_rev_pct'])} of "
+    f"identified revenue, "
     f"and have stopped ordering.** *Cannot lose them* last bought an average of "
     f"{CANNOT_LOSE['AvgRecency']:.0f} days ago having ordered "
     f"{CANNOT_LOSE['AvgFrequency']:.1f} times and spent "
@@ -1170,7 +1327,7 @@ para(
     f"({num(F['seg_promising_customers'])}), *New* ({num(F['seg_new_customers'])}) "
     f"and *Needs attention* ({num(F['seg_needs_attention_customers'])}) hold "
     f"{pct(PIPELINE_PCT)} "
-    f"of revenue between them - they are where the next cohort of Champions has to "
+    f"of identified revenue between them - they are where the next cohort of Champions has to "
     f"come from, and they are cheap to nurture precisely because they are small."
 )
 page_break()
@@ -1197,17 +1354,17 @@ para(
     f"**k = {F['k_chosen']} ({F['silhouette_at_k']:.4f})**. That is a deliberate "
     f"disagreement with the metric, for a stated reason: two clusters cannot be "
     f"marketed to differently, so the split would be statistically neater and "
-    f"operationally useless. The elbow in inertia is also around k = 4. The cost of "
+    f"operationally useless. The elbow in inertia is also around the adopted k. The cost of "
     f"the choice is reported rather than hidden."
 )
 
-h2("9.2  What the four clusters are")
+h2(f"9.2  What the {F['k_chosen']} clusters are")
 figure("11_cluster_profiles", "Average recency, frequency and monetary value per "
                               "cluster, shown as separate panels rather than on one "
                               "shared axis.")
 table(
     ["Cluster", "Label", "Customers", "Avg recency (days)", "Avg orders",
-     "Avg spend", "Revenue", "% of revenue"],
+     "Avg spend", "Revenue", "% of identified revenue"],
     [[row["Cluster"], row["Name"], num(row["Customers"]), one_dp(row["AvgRecency"]),
       one_dp(row["AvgFrequency"]), gbp(row["AvgMonetary"]),
       gbp_compact(row["TotalRevenue"]), pct(row["Revenue %"])]
@@ -1221,7 +1378,8 @@ figure("12_cluster_scatter", "Customers in frequency-monetary space, coloured by
 para(
     f"The clusters separate cleanly on value and activity. "
     f"**{num(RICHEST_CLUSTER['Customers'])} “{RICHEST_CLUSTER['Name']}” "
-    f"carry {pct(RICHEST_CLUSTER['Revenue %'])} of revenue** on an average of "
+    f"carry {pct(RICHEST_CLUSTER['Revenue %'])} of identified revenue** on an "
+    f"average of "
     f"{RICHEST_CLUSTER['AvgFrequency']:.1f} orders and "
     f"{gbp(RICHEST_CLUSTER['AvgMonetary'])} of spend, while the largest cluster by "
     f"headcount - {num(BIGGEST_CLUSTER['Customers'])} "
@@ -1236,16 +1394,23 @@ para(
     f"names and no thresholds, and **every one of the nine rule-based segments sends "
     f"at least 60% of its members to a single cluster** "
     f"({pct(F['segment_cluster_agreement_pct'], 0)} of segments clear that bar). "
-    f"*Cannot lose them* maps 96.7% onto one cluster and *Lost* maps 98.4% onto "
-    f"another."
+    f"*Cannot lose them* maps {pct(F['purity_cannot_lose_them_pct'])} onto one "
+    f"cluster and *Lost* maps {pct(F['purity_lost_pct'])} onto another; the weakest "
+    f"agreement, *{F['min_segment_purity_name']}*, is still "
+    f"{pct(F['min_segment_purity_pct'])}."
 )
 para(
-    "Two independent methods recovering the same structure is evidence that the "
-    "structure is a property of the data rather than an artefact of the analyst's "
-    "chosen cut-offs. The practical consequence is that the transparent, explainable "
-    "RFM rules can be used to run the business, with the clustering standing behind "
-    "them as validation - which is the opposite of the usual trade-off between "
-    "interpretability and rigour."
+    f"Read carefully, this is agreement between two methods rather than corroboration "
+    f"by two independent bodies of evidence: both read the same three R/F/M features "
+    f"off the same rows, so they cannot disagree about the underlying facts. What they "
+    f"disagree about is where to draw the boundaries - fixed quintile thresholds against "
+    f"distances in a standardised log space - and the fact that "
+    f"{pct(F['customer_concordance_pct'])} of customers "
+    f"({F['concordant_customers']:,} of {F['customers']:,}) land in their own "
+    f"segment's modal cluster says the group structure survives that change of rule. "
+    f"That is weaker than independent confirmation and still enough for the practical "
+    f"consequence: the transparent, explainable RFM rules can be used to run the "
+    f"business, with the clustering standing behind them as a robustness check."
 )
 page_break()
 
@@ -1280,7 +1445,12 @@ h2("10.1  Testing the projection instead of publishing it")
 para(
     f"That total is not credible, and the notebook says so with a number. "
     f"**{gbp(F['total_projected_12m'])} is {F['proj_vs_actual_ratio']:.2f}x the "
-    f"retailer's actual second-year revenue of {gbp(F['year2_revenue'])}.** The "
+    f"{gbp(F['year2_id_revenue'])} these same identified customers actually produced in "
+    f"the most recent full year.** The comparison is deliberately like-for-like: the "
+    f"projection is built on the identified base, so measuring it against the "
+    f"{gbp(F['year2_revenue'])} that includes guest checkouts would credit the model "
+    f"with revenue it never saw and understate the gap to "
+    f"{F['proj_vs_allbase_ratio']:.2f}x. The "
     f"projection assumes every customer keeps buying at their observed rate for a "
     f"further twelve months, and it carries no churn probability, so a customer who "
     f"has not ordered for a year is projected forward exactly as confidently as one "
@@ -1296,7 +1466,10 @@ para(
 )
 para(
     "Two conclusions follow, and both are carried into section 13. The projection is "
-    "reported as a **per-customer upper bound**, never as a forecast. And every "
+    "reported as an **upper bound in aggregate**, and for the dormant accounts that "
+    "inflate it, never as a forecast - for a genuinely accelerating customer the same "
+    "assumption is conservative, which is why it is not a per-account ceiling. And "
+    "every "
     "prioritisation decision in this report rests on **historical** value, which is "
     "measured, rather than on the projection, which is modelled. The correct fix - a "
     "BG/NBD model for purchase frequency with a Gamma-Gamma model for spend - is "
@@ -1311,7 +1484,8 @@ page_break()
 h1("11.  Cohort retention")
 
 figure("14_cohort_retention", "Monthly acquisition cohorts against months since "
-                              "acquisition. Blank cells are not yet observable.")
+                              "acquisition. Blank cells are not yet observable, or "
+                              "fall in the truncated final month.")
 table(
     ["Cohort", "Customers", "Month 1", "Month 3", "Month 6",
      "Revenue", "Revenue per customer"],
@@ -1333,6 +1507,16 @@ para(
     f"month 12**, excluding the left-censored first cohort. A curve that flattens "
     f"rather than decaying is the signature of a wholesale reorder cycle: the "
     f"customers who stay, stay for years."
+)
+para(
+    f"Two exclusions are applied before those averages are taken, for the same "
+    f"reason the revenue chart drops the final month. "
+    f"{F['partial_month_cells_masked']} cells of the matrix land in "
+    f"{pretty_month(str(MONTHLY[-1]['InvoiceMonth']))}, which holds "
+    f"{pretty_date(F['date_max'])} and therefore nine days rather than a month; a "
+    f"nine-day window measures less reordering than a full one for arithmetic "
+    f"reasons alone, so those cells are treated as not comparable and left blank. "
+    f"Cells to the right of each cohort's own history are absent rather than zero."
 )
 
 h2("11.1  Correcting the first cohort")
@@ -1359,9 +1543,30 @@ para(
     f"**Customers acquired in November or December retain at "
     f"{pct(F['xmas_cohort_m3'])} by month 3, against {pct(F['nonxmas_cohort_m3'])} "
     f"for customers acquired in any other month** - a gap of {XMAS_GAP:.1f}x. The "
-    f"season that produces the revenue spike produces the retailer's worst customers, "
-    f"and a target that counts peak-season acquisitions as equivalent new "
+    f"season that produces the revenue spike appears to produce the retailer's worst "
+    f"customers, and a target that counts peak-season acquisitions as equivalent new "
     f"relationships is measuring the wrong thing."
+)
+para(
+    f"How much weight that carries is a separate question, and the answer is: less "
+    f"than the size of the gap suggests. Section 11.1 excludes the left-censored "
+    f"December 2009 row, and that row is the only other December in the file, so the "
+    f"peak side of this comparison is **{F['xmas_cohort_count']} cohorts - "
+    f"{F['xmas_cohort_names']} - holding {num(F['xmas_cohort_customers'])} customers "
+    f"between them, {F['xmas_cohort_retained_m3']} of whom ordered again at month 3** - "
+    f"against {F['nonxmas_cohort_count']} off-peak cohorts. Every peak customer in it "
+    f"was acquired in a single trading season, so nothing here separates *this* "
+    f"Christmas from Christmas in general."
+)
+para(
+    f"There is also a calendar confound. Month 3 for those cohorts falls in "
+    f"{F['xmas_m3_calendar_months']} - the trough identified in section 7.1, where "
+    f"monthly revenue is {pct(TROUGH_SHARE)} of the peak. A cohort acquired in November "
+    f"is being asked to reorder in the retailer's quietest weeks, while a cohort "
+    f"acquired in June is asked to reorder in September. Part of the gap is therefore "
+    f"weak seasonal demand rather than weak customers, and this dataset cannot separate "
+    f"the two. The finding is a lead worth testing on the next season, which is how "
+    f"recommendation 5 is written; it is not an established seasonal law."
 )
 page_break()
 
@@ -1379,8 +1584,9 @@ para(
 FINDINGS = [
     ("Revenue is extremely concentrated, so segmentation is justified before it is built",
      [f"**{num(F['top20pct_customers'])} customers (20%) generate "
-      f"{pct(F['top20pct_share'])} of revenue. The top {num(F['top1pct_customers'])} "
-      f"customers (1%) generate {pct(F['top1pct_share'])}.** The median customer is "
+      f"{pct(F['top20pct_share'])} of identified revenue. The top "
+      f"{num(F['top1pct_customers'])} customers (1%) generate "
+      f"{pct(F['top1pct_share'])}.** The median customer is "
       f"worth {gbp(F['median_customer_revenue'])} and the mean "
       f"{gbp(F['mean_customer_revenue'])} - {MEAN_MEDIAN_RATIO:.1f}x - so "
       f"“the average customer” is a fiction. Order value tells the same "
@@ -1398,7 +1604,8 @@ FINDINGS = [
       f"between them.",
       f"The urgent group is neither: **{num(F['at_risk_customers'])} customers in "
       f"*Cannot lose them* and *At risk* have already spent "
-      f"{gbp(F['at_risk_revenue'])} ({pct(F['at_risk_rev_pct'])} of revenue) and have "
+      f"{gbp(F['at_risk_revenue'])} ({pct(F['at_risk_rev_pct'])} of identified "
+      f"revenue) and have "
       f"stopped ordering.** These are proven buyers who went quiet - the only group "
       f"where an intervention has a large, identified prize attached."]),
 
@@ -1448,15 +1655,26 @@ FINDINGS = [
       f"The export markets are low-volume and high-value, which is a different "
       f"business from the domestic one."]),
 
-    ("Growth came from retained customers, not new ones",
-     [f"Like-for-like years grew **{pct(F['yoy_growth_pct'])}** "
-      f"({gbp_m(F['year1_revenue'])} to {gbp_m(F['year2_revenue'])}). But in the "
-      f"second year, **{pct(F['returning_share_year2_pct'])} of identified revenue "
-      f"came from customers acquired earlier.** New customers contributed the "
-      f"remaining {pct(NEW_SHARE_YEAR2)}.",
-      "Growth is being produced by the existing base, which raises the cost of losing "
-      "any part of it and makes finding 2's at-risk pool the most expensive problem "
-      "on this list."]),
+    ("The existing base carries the revenue but shrank; new customers covered the gap",
+     [f"On all revenue, like-for-like years grew **{pct(F['yoy_growth_pct'])}** "
+      f"({gbp_m(F['year1_revenue'])} to {gbp_m(F['year2_revenue'])}). Underneath that, "
+      f"two questions get confused, so both are answered on the identified base. "
+      f"**Repeat buying dominates the level:** in the second year "
+      f"{pct(F['returning_share_year2_pct'])} of identified revenue came from customers "
+      f"who had already ordered in an earlier month, and only {pct(NEW_SHARE_YEAR2)} "
+      f"from customers in their first month.",
+      f"**Acquisition, not retention, produced the growth.** Split by acquisition "
+      f"cohort, identified revenue went from {gbp(F['year1_id_revenue'])} to "
+      f"{gbp(F['year2_id_revenue'])} - a rise of just "
+      f"**{gbp(F['year2_id_growth'])} ({pct(F['year2_id_growth_pct'])})** - made up of "
+      f"**{gbp(F['year2_revenue_from_new_cohorts'])} from customers first acquired "
+      f"during year 2, against a {gbp(abs(F['year2_change_in_existing_base']))} decline "
+      f"in the year-1 base.** Customers acquired before year 2 still supplied "
+      f"{pct(F['preacquired_share_year2_pct'])} of its revenue, but less of it than the "
+      f"year before.",
+      "So the existing base is where the money is, and it is leaking. That is a "
+      "stronger reason to act on finding 2's at-risk pool than \"growth came from "
+      "retention\" would have been: the decline is already in the totals."]),
 
     ("Christmas buys volume, not loyalty",
      [f"Retention settles at roughly a fifth and then holds: "
@@ -1469,16 +1687,32 @@ FINDINGS = [
       f"**customers acquired in November or December retain at "
       f"{pct(F['xmas_cohort_m3'])} by month 3, against "
       f"{pct(F['nonxmas_cohort_m3'])} for customers acquired in any other month** - "
-      f"less than half. The peak season that produces the revenue spike produces the "
-      f"retailer's worst customers."]),
+      f"less than half. The peak season that produces the revenue spike appears to "
+      f"produce the retailer's worst customers.",
+      f"**How thin this one is.** Excluding the left-censored December 2009 row also "
+      f"excludes the only other December in the file, so the peak side is "
+      f"**{F['xmas_cohort_count']} cohorts ({F['xmas_cohort_names']}), "
+      f"{num(F['xmas_cohort_customers'])} customers, "
+      f"{F['xmas_cohort_retained_m3']} of whom reordered at month 3** - against "
+      f"{F['nonxmas_cohort_count']} off-peak cohorts, and all from one Christmas. "
+      f"Their month 3 falls in {F['xmas_m3_calendar_months']}, the calendar trough, so "
+      f"weak seasonal demand and weak customers are confounded. It is a hypothesis "
+      f"worth a controlled test, not an established seasonal law."]),
 
     ("The rules and the algorithm agree, which is the point of running both",
      [f"K-Means on log-scaled RFM was given no rules, and **every one of the nine "
       f"rule-based segments sends at least 60% of its members to a single cluster**. "
-      f"*Cannot lose them* maps 96.7% onto one cluster and *Lost* maps 98.4% onto "
-      f"another. Two independent methods recovering the same structure is evidence "
-      f"the structure is in the data rather than in the analyst's choice of "
-      f"thresholds.",
+      f"*Cannot lose them* maps {pct(F['purity_cannot_lose_them_pct'])} onto one "
+      f"cluster and *Lost* maps {pct(F['purity_lost_pct'])} onto another; the weakest "
+      f"is *{F['min_segment_purity_name']}* at {pct(F['min_segment_purity_pct'])}. At "
+      f"customer level **{pct(F['customer_concordance_pct'])} of accounts "
+      f"({num(F['concordant_customers'])}) sit in their own segment's modal cluster.**",
+      f"What that does and does not prove: the two methods are **not independent "
+      f"evidence in the strong sense**, because both read the same three R/F/M features "
+      f"off the same rows. What differs is how the boundaries are drawn - fixed "
+      f"quintile thresholds against distances in a standardised space - so the "
+      f"agreement shows the structure does not depend on the thresholds chosen, which "
+      f"is the specific thing worth knowing about a hand-built segmentation.",
       f"The honest caveat: the silhouette score preferred "
       f"**k = {F['silhouette_best_k']} ({F['silhouette_best']:.4f})** over the "
       f"**k = {F['k_chosen']} ({F['silhouette_at_k']:.4f})** adopted here. Two "
@@ -1487,7 +1721,8 @@ FINDINGS = [
 
     ("Two data artefacts that would have produced wrong answers",
      [f"**`InvoiceDate` is not customer intent.** All {F['saturday_orders']} Saturday "
-      f"orders in 25 months fall on one date, {pretty_date(F['saturday_date'])} "
+      f"orders in {MONTHS_OBSERVED} months fall on one date, "
+      f"{pretty_date(F['saturday_date'])} "
       f"({pct(F['saturday_share_pct'], 3)} of orders), while Sunday processes "
       f"{num(F['sunday_orders'])} orders at weekday-like volumes. No customer base "
       f"trades every Sunday and one Saturday in two years. The timestamp records "
@@ -1539,15 +1774,18 @@ RECOMMENDATIONS = [
     (f"Protect the {num(F['seg_champions_customers'])} Champions before chasing "
      f"anyone new",
      [f"*From findings 2 and 6.* Champions produce "
-      f"**{pct(F['seg_champions_rev_pct'])} of revenue**, and "
-      f"**{pct(F['returning_share_year2_pct'])} of second-year revenue came from "
-      f"previously-acquired customers**. The concentration cuts both ways: losing "
-      f"{num(F['top1pct_customers'])} customers (the top 1%) would remove "
-      f"**{pct(TOP1_LOSS)} of revenue**.",
-      "Concretely: guaranteed stock availability on their repeat lines through the "
-      "September-November peak, and a named contact. The defensive case is stronger "
-      "than any acquisition case on this data, because acquisition is demonstrably "
-      "not what is producing growth."]),
+      f"**{pct(F['seg_champions_rev_pct'])} of identified revenue**, and "
+      f"**{pct(F['preacquired_share_year2_pct'])} of second-year revenue came from "
+      f"customers acquired before that year began**. The concentration cuts both ways: "
+      f"losing {num(F['top1pct_customers'])} customers (the top 1%) would remove "
+      f"**{pct(TOP1_LOSS)} of identified revenue**.",
+      f"Concretely: guaranteed stock availability on their repeat lines through the "
+      f"September-November peak, and a named contact. The defensive case is not that "
+      f"the existing base is growing - finding 6 shows it fell by "
+      f"{gbp(abs(F['year2_change_in_existing_base']))} in year 2 - it is that the base "
+      f"still carries more than four fifths of the revenue while it declines. "
+      f"Retention work here defends a larger number than acquisition work adds, and "
+      f"the at-risk pool in finding 2 is where that decline is already visible."]),
 
     ("Stop reporting product performance on gross revenue",
      [f"*From finding 3.* {F['net_rank_movers']} of the top ten products change rank "
@@ -1572,13 +1810,17 @@ RECOMMENDATIONS = [
     ("Change what the Christmas peak is expected to deliver",
      [f"*From finding 7.* Customers acquired in November and December retain at "
       f"**{pct(F['xmas_cohort_m3'])} by month 3 versus "
-      f"{pct(F['nonxmas_cohort_m3'])}** otherwise. The peak should be run as a volume "
-      f"and cash-generation event, and peak-acquired customers should **not** be "
-      f"counted as new relationships in any target that assumes they behave like the "
-      f"rest of the base.",
-      "The corollary is to spend acquisition budget outside the peak, where the "
-      "customers who arrive are more than twice as likely to still be buying at "
-      "month 3."]),
+      f"{pct(F['nonxmas_cohort_m3'])}** otherwise - on {F['xmas_cohort_count']} peak "
+      f"cohorts totalling {num(F['xmas_cohort_customers'])} customers from a single "
+      f"Christmas, whose month 3 falls in the calendar trough.",
+      f"That evidence supports a **test**, not a reallocation of budget. Tag "
+      f"peak-acquired customers on arrival and measure their month-3 reorder rate "
+      f"against an off-peak control over the coming season; if the gap survives a "
+      f"second Christmas with the seasonal effect controlled for, then move acquisition "
+      f"spend out of the peak.",
+      f"The half of this that is safe now costs nothing: stop counting peak-acquired "
+      f"customers as new relationships in any target that assumes they behave like the "
+      f"rest of the base, and run the peak as a volume and cash-generation event."]),
 
     ("Test the export markets deliberately",
      [f"*From finding 5.* {F['best_export_aov_country']} averages "
@@ -1615,8 +1857,9 @@ for text in [
     "specifies a control group.",
     "**Any conclusion about when customers prefer to shop** - see finding 9.",
     f"**Using the 12-month CLV projection as a forecast.** It sums to "
-    f"{F['proj_vs_actual_ratio']:.2f}x actual second-year revenue (section 10.1). It "
-    f"is an upper bound per account, nothing more.",
+    f"{F['proj_vs_actual_ratio']:.2f}x actual second-year revenue (section 10.1). "
+    f"Summed across the base it is an upper bound, nothing more; for one accelerating "
+    f"account it can equally be too low.",
 ]:
     bullet(text)
 page_break()
@@ -1631,54 +1874,6 @@ para(
     italic=True, colour=INK_2, size=10,
 )
 
-LIMITATIONS = [
-    f"**Attribution gap.** {pct(F['anonymous_rows_pct'])} of clean sales lines "
-    f"({num(F['anonymous_rows'])}), carrying {pct(F['anonymous_revenue_pct'])} of "
-    f"clean revenue ({gbp(F['anonymous_revenue'])}), have no customer ID - both "
-    f"shares measured on the same cleaned base. Every customer-level result is "
-    f"computed on the identified {pct(F['id_coverage_pct'])} of revenue only. If "
-    f"guest orders are disproportionately one-off purchases, the true repeat rate is "
-    f"lower than reported here; if they are unrecognised repeat buyers, several "
-    f"segments are undercounted. The data cannot distinguish the two cases.",
-
-    "**Revenue, not profit.** The dataset has no cost of goods. A low-margin "
-    "bestseller and a high-margin niche line are indistinguishable in this analysis, "
-    "so no pricing or product-mix decision should rest on it alone.",
-
-    f"**The CLV projection is demonstrably biased upward, and section 10.1 shows by "
-    f"how much.** Summed across the base it is {F['proj_vs_actual_ratio']:.2f}x "
-    f"actual second-year revenue, and it ranks a dormant segment above Champions. It "
-    f"carries no churn probability, so it should be read only as a per-customer upper "
-    f"bound. BG/NBD plus a Gamma-Gamma spend model is the correct fix and is not done "
-    f"here; prioritisation in section 13 therefore rests on historical value.",
-
-    "**Censoring at both ends of the cohort matrix.** Cohorts acquired late in the "
-    "window have not had time to show a retention curve, so blank cells on the right "
-    "mean *not yet observable*, not zero. At the other end, the first cohort is "
-    "left-censored: customers who predate the log appear as newly acquired in "
-    "December 2009. Section 11.1 quantifies that bias and reports corrected figures.",
-
-    f"**`InvoiceDate` records processing, not intent.** All {F['saturday_orders']} "
-    f"Saturday orders in the 25-month window fall on one date, so the timestamp "
-    f"reflects back-office keying rather than customer behaviour. No conclusion about "
-    f"*when customers want to shop* can be drawn from the hour and weekday columns.",
-
-    "**Quintile scoring is relative.** An RFM score of 5 means “top fifth of "
-    "this base”, not “good” in absolute terms. Scores are not "
-    "comparable across a different customer base or a different time window.",
-
-    f"**k = {F['k_chosen']} is a judgement call.** The silhouette metric preferred "
-    f"k = {F['silhouette_best_k']}. Four clusters were chosen for operational "
-    f"interpretability, and the metric cost of that choice is reported in section 9.1 "
-    f"rather than hidden.",
-
-    "**One retailer, one category, 2009-2011.** A UK giftware wholesaler in the "
-    "post-financial-crisis period. The method transfers; these coefficients do not.",
-
-    "**Segments are descriptive, not causal.** Nothing here establishes that a "
-    "campaign *causes* a customer to return. A holdout test would be needed to claim "
-    "that, and this dataset contains no campaign data.",
-]
 
 for i, text in enumerate(LIMITATIONS, start=1):
     numbered(i, text)
@@ -1696,17 +1891,20 @@ para(
     f"{gbp(F['sales_revenue'])} of revenue and {num(F['customers'])} identified "
     f"customers resolve into a business that depends on a few hundred accounts: "
     f"{num(F['top20pct_customers'])} customers carry {pct(F['top20pct_share'])} of "
-    f"revenue, {num(F['seg_champions_customers'])} Champions carry "
+    f"identified revenue, {num(F['seg_champions_customers'])} Champions carry "
     f"{pct(F['seg_champions_rev_pct'])}, and "
-    f"{pct(F['returning_share_year2_pct'])} of second-year revenue came from "
-    f"customers who were already there."
+    f"{pct(F['preacquired_share_year2_pct'])} of second-year revenue came from "
+    f"customers who were already there - a base that nonetheless spent "
+    f"{gbp(abs(F['year2_change_in_existing_base']))} less than it had the year before."
 )
 para(
-    f"That structure was recovered twice, by methods that share no assumptions: an "
-    f"explicit RFM rule ladder and an unsupervised K-Means clustering that was given "
-    f"no rules at all. Their agreement - every segment sending at least 60% of its "
-    f"members to one cluster - is the strongest evidence in the report that the "
-    f"segmentation describes the business rather than the analyst."
+    f"That structure was recovered twice: by an explicit RFM rule ladder and by an "
+    f"unsupervised K-Means clustering that was given no rules at all. The two are not "
+    f"independent in the strong sense - both read the same three features off the same "
+    f"rows - but they draw their boundaries in completely different ways, so their "
+    f"agreement ({pct(F['customer_concordance_pct'])} of customers in their own "
+    f"segment's modal cluster, every segment above 60%) is good evidence that the "
+    f"segmentation follows the data rather than the thresholds the analyst picked."
 )
 para(
     f"The most useful output is not the segmentation itself but the list it produces: "
@@ -1735,13 +1933,19 @@ page_break()
 # --------------------------------------------------------------------------- #
 h1("16.  How to reproduce this project")
 
-para("From a clone of the repository, on any machine with Python 3.10 or newer:")
+para(
+    "From a clone of the repository. The analysis was developed and run on "
+    "**Python 3.14.6** under Windows 11; the bounds in `requirements.txt` are the "
+    "oldest releases whose APIs the code uses, but no other version was exercised:"
+)
 for text in [
-    "`pip install -r requirements.txt`",
+    "`python -m venv .venv` and activate it, then `pip install -r requirements.txt`",
     "`jupyter notebook " + NOTEBOOK + "`",
     "*Kernel > Restart Kernel and Run All Cells*. The first run downloads the "
-    "45 MB source workbook from UCI into `data/raw/` and caches it; later runs read "
-    "the cache. Expect several minutes, most of it spent reading the .xlsx file.",
+    "45.6 MB source workbook from UCI into `data/raw/` and caches both sheets as a "
+    "CSV; later runs read the cache. Measured on the development machine, the first "
+    "run takes **1 min 28 s** and later runs **33 s**, excluding the download - UCI's "
+    "throughput varies from about 30 seconds to several minutes.",
     "`python tools/build_report.py` regenerates this document from the notebook's "
     "outputs.",
 ]:
