@@ -94,10 +94,12 @@ be tied to the exact library versions that produced it.
 code(r'''
 # --- Standard library -------------------------------------------------------
 import json
+import platform
 import re
 import sys
 import urllib.request
 import zipfile
+from importlib.metadata import version
 from pathlib import Path
 
 # --- Third party ------------------------------------------------------------
@@ -151,7 +153,20 @@ def fact(key, value):
     FACTS[key] = value
     return value
 
-print("repository root:", ROOT)
+
+# The report quotes the software stack, so measure it here rather than typing it
+# into the document: whatever interpreter ran this notebook is what gets printed.
+fact("env_python", platform.python_version())
+fact("env_pandas", pd.__version__)
+fact("env_numpy", np.__version__)
+fact("env_matplotlib", mpl.__version__)
+fact("env_sklearn", sklearn.__version__)
+fact("env_openpyxl", version("openpyxl"))
+fact("env_notebook", version("notebook"))
+
+# Only the folder name: the absolute path is specific to whoever ran the notebook and
+# has no business being stored in a cell output that gets committed and submitted.
+print("repository root:", ROOT.name)
 ''')
 
 # ==================================================================== THEME
@@ -229,12 +244,17 @@ def titled(ax, title, subtitle=None):
                     va="bottom", fontsize=9.5, color=INK_MUTED)
 
 
-def label_barh(ax, values, texts=None, fmt=money, pad=0.012):
-    """Direct-label horizontal bars. Values stay in ink, never the series colour."""
+def label_barh(ax, ys, values, texts=None, fmt=money, pad=0.012):
+    """Direct-label horizontal bars. Values stay in ink, never the series colour.
+
+    `ys` must be the same positions the bars were drawn at. Several charts here
+    draw at np.arange(n)[::-1] to put rank one on top, so labelling by loop
+    index instead would mirror every label onto the wrong bar.
+    """
     span = max((abs(v) for v in values), default=1) or 1
-    for i, v in enumerate(values):
+    for i, (pos, v) in enumerate(zip(ys, values)):
         txt = fmt(v) if texts is None else texts[i]
-        ax.annotate(txt, xy=(v + pad * span * (1 if v >= 0 else -1), i), va="center",
+        ax.annotate(txt, xy=(v + pad * span * (1 if v >= 0 else -1), pos), va="center",
                     ha="left" if v >= 0 else "right", fontsize=9, color=INK_2)
 
 
@@ -385,6 +405,7 @@ fact("duplicate_rows", int(df.duplicated().sum()))
 fact("cancellation_rows", int(df["Invoice"].str.startswith("C").sum()))
 fact("negative_qty_rows", int((df["Quantity"] < 0).sum()))
 fact("zero_price_rows", int((df["Price"] == 0).sum()))
+fact("negative_price_rows", int((df["Price"] < 0).sum()))
 fact("raw_countries", int(df["Country"].nunique()))
 fact("date_min", str(df["InvoiceDate"].min().date()))
 fact("date_max", str(df["InvoiceDate"].max().date()))
@@ -595,6 +616,10 @@ fact("sales_revenue", round(float(sales["Revenue"].sum()), 2))
 fact("sales_id_rows", int(len(sales_id)))
 fact("sales_id_revenue", round(float(sales_id["Revenue"].sum()), 2))
 fact("anonymous_rows", int(len(anonymous)))
+# The audit counted cancellations and write-offs in the raw file; these are the
+# counts actually set aside, i.e. after step 2 removed the exact duplicates.
+fact("cancellation_rows_set_aside", int(len(cancellations)))
+fact("writeoff_rows_set_aside", int(len(writeoffs)))
 fact("anonymous_revenue", round(float(anonymous["Revenue"].sum()), 2))
 # Both shares are measured against the same clean base, so they are comparable:
 # guest lines are a larger share of rows than of money.
@@ -800,12 +825,66 @@ plt.show()
 
 share = split_rev.div(split_rev.sum(axis=1), axis=0) * 100
 out = split_rev.round(2).join(share.round(1), rsuffix=" %")
+# The second year is the twelve *full* months that follow the first: the file's
+# final month holds nine days, and including it would make the window thirteen
+# months long. Both bounds are derived from the data, not typed in.
+full_months = split_rev.index[:-1]
+year2 = split_rev.loc[full_months[full_months >= full_months[0] + 12]]
+fact("year2_first_month", str(year2.index[0]))
+fact("year2_last_month", str(year2.index[-1]))
 fact("returning_share_year2_pct", round(float(
-    split_rev.loc[split_rev.index >= pd.Period("2010-12"), "Returning customers"].sum()
-    / split_rev.loc[split_rev.index >= pd.Period("2010-12")].sum().sum() * 100), 1))
-print(f"In the second year (Dec 2010 onward), returning customers generated "
-      f"{FACTS['returning_share_year2_pct']}% of identified revenue.\n")
+    year2["Returning customers"].sum() / year2.sum().sum() * 100), 1))
+print(f"In the second year ({year2.index[0]} to {year2.index[-1]}, twelve full "
+      f"months), {FACTS['returning_share_year2_pct']}% of identified revenue came from "
+      f"customers who had already ordered in an earlier month.\n")
 out
+''')
+
+md(r'''
+That 91.3% is a *month-level* flag: a customer counts as returning in every month
+after the one they were first seen in, including months later in the same year they
+were acquired. It measures repeat buying, and it is easy to misread as "the second
+year was carried by the customers we already had". Splitting the second year by
+**acquisition cohort** instead — year-1 customers against customers first seen in
+year 2 — answers that question, and the answer points the other way.
+''')
+
+code(r'''
+# Same twelve-month window, but split by when the customer was acquired rather than
+# by whether this is their first month. The two questions have different answers and
+# the difference matters, so both are computed rather than one standing in for both.
+y2_rows = tagged[(tagged["InvoiceMonth"] >= year2.index[0])
+                 & (tagged["InvoiceMonth"] <= year2.index[-1])]
+pre_rev = float(y2_rows[y2_rows["CohortMonth"] < year2.index[0]]["Revenue"].sum())
+new_rev = float(y2_rows[y2_rows["CohortMonth"] >= year2.index[0]]["Revenue"].sum())
+y1_rows = tagged[(tagged["InvoiceMonth"] >= full_months[0])
+                 & (tagged["InvoiceMonth"] < year2.index[0])]
+y1_id = float(y1_rows["Revenue"].sum())
+y2_id = pre_rev + new_rev
+
+fact("year1_id_revenue", round(y1_id, 2))
+fact("year2_id_revenue", round(y2_id, 2))
+fact("year2_id_growth", round(y2_id - y1_id, 2))
+fact("year2_id_growth_pct", round((y2_id / y1_id - 1) * 100, 1))
+fact("preacquired_share_year2_pct", round(pre_rev / y2_id * 100, 1))
+fact("newly_acquired_share_year2_pct", round(new_rev / y2_id * 100, 1))
+fact("year2_revenue_from_new_cohorts", round(new_rev, 2))
+fact("year2_change_in_existing_base", round(pre_rev - y1_id, 2))
+
+split = pd.DataFrame([
+    ("Acquired in year 1, still buying in year 2", pre_rev, pre_rev / y2_id * 100),
+    ("First acquired during year 2", new_rev, new_rev / y2_id * 100),
+], columns=["Acquisition cohort", "Year-2 revenue (GBP)", "Share %"]).round(2)
+print(split.to_string(index=False))
+
+print(f"\nIdentified revenue, year 1 -> year 2: {money(y1_id)} -> {money(y2_id)}  "
+      f"({FACTS['year2_id_growth']:+,.2f}, {FACTS['year2_id_growth_pct']:+.1f}%)")
+print(f"  customers first acquired in year 2 added : {money(new_rev)}")
+print(f"  the year-1 base changed by              : {money(pre_rev - y1_id)}")
+print("\nSo the second year did not grow because the existing base grew. The existing")
+print("base shrank, and new acquisition more than covered the shortfall. Any reading of")
+print("the 91.3% figure as 'retention drove the growth' inverts the actual direction.")
+split
 ''')
 
 md(r'''
@@ -910,28 +989,42 @@ order processing.
 
 code(r'''
 prod = sales[sales["IsProduct"]]
-by_rev = (prod.groupby("Description")
+
+# The 4,725 merchandise stock codes carry 5,336 distinct descriptions, so the
+# same physical product is spelled more than one way in the file. Grouping on
+# Description would split one product's revenue across its spellings - it costs
+# Jumbo Bag Red Retrospot GBP 34,607 and a place in this table. Group on the
+# identifier and label each code with its most frequent description (ties broken
+# alphabetically, so the label never depends on row order).
+name_lines = prod.groupby(["StockCode", "Description"]).size().rename("Lines").reset_index()
+prod_name = (name_lines.sort_values(["StockCode", "Lines", "Description"],
+                                    ascending=[True, False, True])
+             .drop_duplicates("StockCode").set_index("StockCode")["Description"])
+
+by_rev = (prod.groupby("StockCode")
           .agg(Revenue=("Revenue", "sum"), Units=("Quantity", "sum"),
                Orders=("Invoice", "nunique"))
           .sort_values("Revenue", ascending=False))
+by_rev.insert(0, "Product", prod_name.reindex(by_rev.index).str.title())
 by_rev["Revenue share %"] = (by_rev["Revenue"] / prod["Revenue"].sum() * 100).round(2)
 top10 = by_rev.head(10)
 
 fig, ax = plt.subplots(figsize=(10.5, 5.4))
 y = np.arange(len(top10))[::-1]
 ax.barh(y, top10["Revenue"], height=0.72, color=BLUE, zorder=3)
-ax.set_yticks(y, [t.title() if len(t) < 42 else t[:39].title() + "..." for t in top10.index])
-label_barh(ax, top10["Revenue"].to_list())
+ax.set_yticks(y, [t if len(t) < 42 else t[:39] + "..." for t in top10["Product"]])
+label_barh(ax, y, top10["Revenue"].to_list())
 ax.xaxis.set_major_formatter(GBP)
 ax.set_xlim(0, top10["Revenue"].max() * 1.16)
 ax.grid(axis="y", visible=False)
 ax.grid(axis="x", visible=True)
-titled(ax, "The top ten lines out of 4,700 products",
+titled(ax, f"The top ten lines out of {prod['StockCode'].nunique():,} products",
         "Merchandise only - carriage, vouchers and administrative codes excluded")
 save(fig, "04_top_products")
 plt.show()
 
-fact("top_product", str(top10.index[0]).title())
+fact("top_product", str(top10["Product"].iloc[0]))
+fact("product_description_count", int(prod["Description"].nunique()))
 fact("top_product_revenue", round(float(top10["Revenue"].iloc[0]), 2))
 fact("top10_product_share_pct", round(float(top10["Revenue"].sum() / prod["Revenue"].sum() * 100), 2))
 fact("product_count", int(prod["StockCode"].nunique()))
@@ -955,7 +1048,7 @@ by_units = by_rev.sort_values("Units", ascending=False).head(10)
 overlap = len(set(by_units.index) & set(top10.index))
 fact("rev_unit_overlap", int(overlap))
 print(f"Only {overlap} of the top 10 by revenue also appear in the top 10 by units sold.\n")
-by_units[["Units", "Revenue", "Orders"]]
+by_units[["Product", "Units", "Revenue", "Orders"]]
 ''')
 
 md(r'''
@@ -997,7 +1090,7 @@ ax = axes[1]
 y = np.arange(len(export))[::-1]
 ax.barh(y, export["Revenue"], height=0.7, color=ORANGE, zorder=3)
 ax.set_yticks(y, export.index)
-label_barh(ax, export["Revenue"].to_list())
+label_barh(ax, y, export["Revenue"].to_list())
 ax.xaxis.set_major_formatter(GBP)
 ax.set_xlim(0, export["Revenue"].max() * 1.2)
 ax.grid(axis="y", visible=False)
@@ -1034,24 +1127,46 @@ handling cost.
 ''')
 
 code(r'''
-ret = cancellations[cancellations["Quantity"] < 0].copy()
-ret["ReturnValue"] = ret["Revenue"].abs()
+# A return rate is a ratio, so both sides of it have to count the same population.
+# The cancellations frame was split off at step 3, which is *before* step 7 dropped
+# the administrative stock codes - so it still holds credit notes against MANUAL
+# adjustments, Amazon fees, bank charges, discounts and samples. Those codes are
+# absent from the gross revenue denominator, so leaving them in the numerator would
+# divide one population by another and inflate the rate. They are real money and are
+# reported in their own right below, just not as customer returns.
+all_credit = cancellations[cancellations["Quantity"] < 0].copy()
+all_credit["ReturnValue"] = all_credit["Revenue"].abs()
+admin_rev = all_credit[all_credit["StockCode"].isin(ADMIN_CODES)]
+ret = all_credit[~all_credit["StockCode"].isin(ADMIN_CODES)].copy()
 ret["InvoiceMonth"] = ret["InvoiceDate"].dt.to_period("M")
 
 gross = float(sales["Revenue"].sum())
 total_ret = float(ret["ReturnValue"].sum())
+fact("credit_note_rows", int(len(all_credit)))
+fact("credit_note_value", round(float(all_credit["ReturnValue"].sum()), 2))
+fact("admin_reversal_rows", int(len(admin_rev)))
+fact("admin_reversal_value", round(float(admin_rev["ReturnValue"].sum()), 2))
 fact("return_rows", int(len(ret)))
 fact("return_value", round(total_ret, 2))
 fact("return_rate_pct", round(total_ret / gross * 100, 2))
 fact("returning_customers", int(ret["CustomerID"].nunique()))
 fact("net_revenue", round(gross - total_ret, 2))
 
-print(f"Return lines            : {len(ret):,}")
+print(f"Credit-note lines set aside in step 3 : {len(all_credit):,}  "
+      f"{money(all_credit['ReturnValue'].sum())}")
+print(f"  of which administrative reversals   : {len(admin_rev):,}  "
+      f"{money(admin_rev['ReturnValue'].sum())}  (excluded from the return rate)")
+print(f"  customer product/carriage returns   : {len(ret):,}  {money(total_ret)}")
+print()
 print(f"Value returned          : {money(total_ret)}")
 print(f"As % of gross revenue   : {FACTS['return_rate_pct']}%")
 print(f"Net of returns          : {money(gross - total_ret)}")
 print(f"Customers with a return : {ret['CustomerID'].nunique():,} of {sales_id['CustomerID'].nunique():,} "
       f"({ret['CustomerID'].nunique() / sales_id['CustomerID'].nunique():.1%})")
+print()
+print("What the administrative reversals are, largest first:")
+print(admin_rev.groupby("StockCode")["ReturnValue"].agg(Lines="size", Value="sum")
+      .sort_values("Value", ascending=False).to_string())
 ''')
 
 code(r'''
@@ -1136,19 +1251,22 @@ rr
 ''')
 
 code(r'''
+# Keyed on StockCode for the same reason as the revenue ranking above, so that a
+# product's returns and its sales are always counted against the same key.
 top_ret = (ret[ret["StockCode"].isin(prod["StockCode"])]
-           .groupby("Description")
+           .groupby("StockCode")
            .agg(Returned=("ReturnValue", "sum"), Lines=("Quantity", "size"))
            .sort_values("Returned", ascending=False).head(10))
-sold = prod.groupby("Description")["Revenue"].sum()
+top_ret.insert(0, "Product", prod_name.reindex(top_ret.index).str.title())
+sold = prod.groupby("StockCode")["Revenue"].sum()
 top_ret["Sold"] = sold.reindex(top_ret.index).fillna(0.0)
 top_ret["Return rate %"] = (top_ret["Returned"] / top_ret["Sold"].replace(0, np.nan) * 100).round(1)
 
 fig, ax = plt.subplots(figsize=(10.5, 5.2))
 y = np.arange(len(top_ret))[::-1]
 ax.barh(y, top_ret["Returned"], height=0.72, color=ORANGE, zorder=3)
-ax.set_yticks(y, [t.title() if len(t) < 40 else t[:37].title() + "..." for t in top_ret.index])
-label_barh(ax, top_ret["Returned"].to_list())
+ax.set_yticks(y, [t if len(t) < 40 else t[:37] + "..." for t in top_ret["Product"]])
+label_barh(ax, y, top_ret["Returned"].to_list())
 ax.xaxis.set_major_formatter(GBP)
 ax.set_xlim(0, top_ret["Returned"].max() * 1.18)
 ax.grid(axis="y", visible=False)
@@ -1158,15 +1276,15 @@ titled(ax, "Returns concentrate in a handful of product lines",
 save(fig, "07_top_returned")
 plt.show()
 
-fact("top_returned_product", str(top_ret.index[0]).title())
+fact("top_returned_product", str(top_ret["Product"].iloc[0]))
 fact("top_returned_value", round(float(top_ret["Returned"].iloc[0]), 2))
 top_ret
 ''')
 
 code(r'''
 # Product ranking net of cancellations - the version a buyer should actually use.
-returned_by_product = ret.groupby("Description")["ReturnValue"].sum()
-net_rank = (by_rev[["Revenue", "Units", "Orders"]]
+returned_by_product = ret.groupby("StockCode")["ReturnValue"].sum()
+net_rank = (by_rev[["Product", "Revenue", "Units", "Orders"]]
             .assign(Returned=returned_by_product.reindex(by_rev.index).fillna(0.0))
             .assign(NetRevenue=lambda d: (d["Revenue"] - d["Returned"]).round(2)))
 net_rank["Gross rank"] = net_rank["Revenue"].rank(ascending=False).astype(int)
@@ -1176,21 +1294,21 @@ net_rank["Rank change"] = net_rank["Gross rank"] - net_rank["Net rank"]
 top_gross = net_rank.nlargest(10, "Revenue")
 movers = top_gross[top_gross["Rank change"] != 0]
 print("Top 10 by GROSS revenue, showing where each sits once cancellations net off:\n")
-print(top_gross[["Revenue", "Returned", "NetRevenue", "Gross rank", "Net rank",
-                 "Rank change"]].to_string())
+print(top_gross[["Product", "Revenue", "Returned", "NetRevenue", "Gross rank",
+                 "Net rank", "Rank change"]].to_string())
 fact("net_rank_movers", int(len(movers)))
 worst = top_gross.nlargest(1, "Returned")
-fact("worst_net_mover", str(worst.index[0]).title())
+fact("worst_net_mover", str(worst["Product"].iloc[0]))
 fact("worst_net_mover_gross_rank", int(worst["Gross rank"].iloc[0]))
 fact("worst_net_mover_net_rank", int(worst["Net rank"].iloc[0]))
 runner_up = top_gross.nlargest(2, "Returned").iloc[1]
-fact("second_net_mover", str(top_gross.nlargest(2, "Returned").index[1]).title())
+fact("second_net_mover", str(runner_up["Product"]))
 fact("second_net_mover_gross_rank", int(runner_up["Gross rank"]))
 fact("second_net_mover_net_rank", int(runner_up["Net rank"]))
 print(f"\n{len(movers)} of the top 10 change position once returns are netted off.")
-print(f"{str(worst.index[0]).title()} falls from gross rank "
+print(f"{worst['Product'].iloc[0]} falls from gross rank "
       f"{int(worst['Gross rank'].iloc[0])} to net rank {int(worst['Net rank'].iloc[0])}.")
-net_rank.nlargest(10, "NetRevenue")[["Revenue", "Returned", "NetRevenue", "Units", "Orders"]]
+net_rank.nlargest(10, "NetRevenue")[["Product", "Revenue", "Returned", "NetRevenue", "Units", "Orders"]]
 ''')
 
 # =========================================================== CONCENTRATION
@@ -1370,7 +1488,7 @@ y = np.arange(len(s))
 ax = axes[0]
 ax.barh(y, s["Revenue"], height=0.72, color=BLUE, zorder=3)
 ax.set_yticks(y, s.index)
-label_barh(ax, s["Revenue"].to_list(),
+label_barh(ax, y, s["Revenue"].to_list(),
            texts=[f"{money(v)}  ({p:.0f}%)" for v, p in zip(s["Revenue"], s["Revenue %"])])
 ax.xaxis.set_major_formatter(GBP)
 ax.set_xlim(0, s["Revenue"].max() * 1.34)
@@ -1379,7 +1497,7 @@ titled(ax, "Revenue by segment", "Total revenue generated to date")
 
 ax = axes[1]
 ax.barh(y, s["Customers"], height=0.72, color=ORANGE, zorder=3)
-label_barh(ax, s["Customers"].to_list(),
+label_barh(ax, y, s["Customers"].to_list(),
            texts=[f"{int(v):,}  ({p:.0f}%)" for v, p in zip(s["Customers"], s["Customer %"])])
 ax.set_xlim(0, s["Customers"].max() * 1.34)
 ax.grid(axis="y", visible=False)
@@ -1523,7 +1641,7 @@ for ax, (col, title, fmt, is_money) in zip(axes, spec):
     ax.barh(y, vals, height=0.7, color=colors, zorder=3)
     ax.set_yticks(y, labels if ax is axes[0] else [""] * len(labels))
     texts = [money(v) if is_money else fmt.format(v) for v in vals]
-    label_barh(ax, vals, texts=texts)
+    label_barh(ax, y, vals, texts=texts)
     ax.set_xlim(0, max(vals) * 1.28)
     if is_money:
         ax.xaxis.set_major_formatter(GBP)
@@ -1576,9 +1694,32 @@ print(share.to_string())
 
 agree = float(sum(share.max(axis=1) >= 60) / len(share) * 100)
 fact("segment_cluster_agreement_pct", round(agree, 1))
+# Record the purity of the two segments the report quotes, so the written document
+# reads them from facts.json instead of carrying a typed-in number.
+purity = share.max(axis=1)
+fact("purity_cannot_lose_them_pct", round(float(purity["Cannot lose them"]), 1))
+fact("purity_lost_pct", round(float(purity["Lost"]), 1))
+fact("min_segment_purity_pct", round(float(purity.min()), 1))
+fact("min_segment_purity_name", str(purity.idxmin()))
+fact("purity_champions_pct", round(float(purity["Champions"]), 1))
+# A segment-level pass rate says nine of nine segments clear the bar but not how many
+# customers actually sit in their segment's modal cluster. That is the number a reader
+# should judge the cross-check on, so it is computed rather than left implied.
+concordant = int(xtab.max(axis=1).sum())
+fact("customer_concordance_pct", round(concordant / int(xtab.to_numpy().sum()) * 100, 1))
+fact("concordant_customers", concordant)
 print(f"\n{agree:.0f}% of the rule-based segments send at least 60% of their members to a")
-print("single cluster - the two methods are describing the same structure, which is")
-print("the point of running both.")
+print("single cluster, and at customer level "
+      f"{FACTS['customer_concordance_pct']}% ({concordant:,} of "
+      f"{int(xtab.to_numpy().sum()):,}) fall in their own segment's modal cluster.")
+print(f"The weakest agreement is {FACTS['min_segment_purity_name']} at "
+      f"{FACTS['min_segment_purity_pct']}%; Champions is "
+      f"{FACTS['purity_champions_pct']}%.")
+print("\nThe two methods are describing the same structure, which is the point of running")
+print("both - but they are not independent evidence in the strong sense: both read the")
+print("same three R/F/M features off the same rows. What differs is how the boundaries")
+print("are drawn - fixed quintile thresholds against distances in a standardised space -")
+print("so the agreement shows the structure does not depend on the thresholds chosen.")
 xtab
 ''')
 
@@ -1642,7 +1783,7 @@ fig, ax = plt.subplots(figsize=(10.6, 5.4))
 y = np.arange(len(s))
 ax.barh(y, s["Projected12M"], height=0.72, color=BLUE, zorder=3)
 ax.set_yticks(y, s.index)
-label_barh(ax, s["Projected12M"].to_list(),
+label_barh(ax, y, s["Projected12M"].to_list(),
            texts=[f"{money(v)} per customer  x{int(n):,}"
                   for v, n in zip(s["Projected12M"], s["Customers"])])
 ax.xaxis.set_major_formatter(GBP)
@@ -1669,13 +1810,20 @@ below, and the model fails both in an instructive way.
 
 code(r'''
 # Test 1: sum the per-customer projection and compare it with what the business
-# actually took in its most recent full year.
+# actually took in its most recent full year. The projection is built from sales_id,
+# so the like-for-like denominator is year-2 revenue on that same base - year2_revenue
+# includes guest checkouts the projection never saw, which would flatter the ratio.
 proj_total = float(clv["Projected12M"].sum())
 actual_y2 = float(FACTS["year2_revenue"])
-fact("proj_vs_actual_ratio", round(proj_total / actual_y2, 2))
+actual_y2_id = float(FACTS["year2_id_revenue"])
+fact("proj_vs_actual_ratio", round(proj_total / actual_y2_id, 2))
+fact("proj_vs_allbase_ratio", round(proj_total / actual_y2, 2))
 print(f"Sum of 12-month projections across all {len(clv):,} customers : {money(proj_total)}")
-print(f"Revenue the business actually took in year 2 (Dec-Nov)        : {money(actual_y2)}")
-print(f"Ratio                                                         : "
+print(f"Year-2 revenue from these identified customers (like-for-like): {money(actual_y2_id)}")
+print(f"Ratio, like-for-like                                          : "
+      f"{proj_total / actual_y2_id:.2f}x")
+print(f"\nFor reference, year-2 revenue including guest checkouts       : {money(actual_y2)}")
+print(f"Ratio against that wider base (understates the gap)           : "
       f"{proj_total / actual_y2:.2f}x")
 
 # Test 2: does the projection rank the segments sensibly?
@@ -1691,8 +1839,11 @@ print("customer who bought heavily for two months and then vanished is credited 
 print("very high monthly rate - and is then assumed to sustain it for a year. Dormant")
 print("segments are therefore inflated, and summing across everyone double-counts")
 print("customers who have already left.")
-print("\nConclusion: this projection is usable as a per-customer UPPER BOUND - what an")
-print("account would be worth if fully recovered and held at its old pace - and is not")
+print("\nConclusion: summed across the base this projection is an UPPER BOUND, and for")
+print("a dormant account it is an upper bound individually - what that account would be")
+print("worth if fully recovered and held at its old pace. It is not a per-account ceiling,")
+print("because for a customer whose ordering is still accelerating a constant rate")
+print("under-projects. Either way it is not")
 print("usable as a revenue forecast or as a ranking of who to prioritise. Historical")
 print("CLV is used for prioritisation below, and a churn-aware model (BG/NBD plus")
 print("Gamma-Gamma) is named in the limitations as the correct fix.")
@@ -1736,6 +1887,22 @@ sizes = coh[coh["PeriodIndex"] == 0].groupby("CohortMonth")["CustomerID"].nuniqu
 counts = coh.pivot_table(index="CohortMonth", columns="PeriodIndex",
                          values="CustomerID", aggfunc="nunique", observed=True)
 retention = (counts.div(sizes, axis=0) * 100).round(1)
+
+# The log stops on 9 December 2011, so any cell whose observation month is that
+# final month covers nine days rather than a month and understates the cohort.
+# Blank those cells for the same reason the revenue chart drops the partial month:
+# a nine-day window is not comparable with a full one. Month 0 is exempt - it is
+# 100% by definition, not a measurement.
+partial_month = sales_id["InvoiceMonth"].max()
+partial_cells = 0
+for k in (c for c in retention.columns if c >= 1):
+    hit = (retention.index + k) == partial_month
+    partial_cells += int(hit.sum())
+    retention.loc[hit, k] = np.nan
+fact("partial_month_cells_masked", partial_cells)
+print(f"{partial_cells} retention cells fall in the partial month {partial_month} "
+      "and are excluded as not comparable.")
+
 retention.index = retention.index.astype(str)
 
 show = retention.iloc[:, :13]
@@ -1804,9 +1971,10 @@ md(r'''
 ### 14.1 The first cohort is not an acquisition cohort
 
 The December 2009 row deserves suspicion rather than celebration. It is both the
-**largest** cohort and by far the **best-retaining** one — 35–42% still ordering
-each month, roughly double every cohort that follows. A first month that
-outperforms every later month by 2x is not a marketing success; it is an artefact.
+**largest** cohort and by far the **best-retaining** one — its reorder rate holds
+in the 33–50% band for the whole of the following year, against a month-1 average
+of 20.8% for every cohort that follows it. A cohort that sustains roughly twice the base rate
+is not a marketing success; it is an artefact.
 
 The cause is **left-censoring**. The log begins on 1 December 2009, so a customer
 who had been buying from this retailer for years appears in the data for the first
@@ -1853,13 +2021,39 @@ print("artefact of that single left-censored row.")
 xmas = true_cohorts.index.str.endswith(("-11", "-12"))
 fact("xmas_cohort_m3", round(float(true_cohorts.loc[xmas, 3].dropna().mean()), 1))
 fact("nonxmas_cohort_m3", round(float(true_cohorts.loc[~xmas, 3].dropna().mean()), 1))
+
+# How thin is this comparison? Dropping the left-censored Dec-2009 row also drops the
+# only other December in the file, so every peak cohort with an observable month 3
+# comes from one trading season. Recording the basis keeps the finding honest: a
+# two-cohort result is a signal to test, not an established seasonal law.
+xmas_names = [c for c in true_cohorts.index[xmas] if pd.notna(true_cohorts.loc[c, 3])]
+xmas_n = int(sizes.reindex(pd.PeriodIndex(xmas_names, freq="M")).sum())
+fact("xmas_cohort_count", len(xmas_names))
+fact("xmas_cohort_names", ", ".join(str(c) for c in xmas_names))
+fact("xmas_cohort_customers", xmas_n)
+# Counted from the raw cohort pivot, not reconstructed from the rounded percentage.
+fact("xmas_cohort_retained_m3", int(
+    counts.loc[pd.PeriodIndex(xmas_names, freq="M"), 3].sum()))
+fact("nonxmas_cohort_count", int((~xmas & true_cohorts[3].notna()).sum()))
+# The month-3 window for a Nov/Dec cohort lands in Feb/Mar - the calendar trough. The
+# gap is therefore a peak-vs-trough comparison as much as a customer-quality one.
+fact("xmas_m3_calendar_months", ", ".join(
+    str(pd.Period(c, "M") + 3) for c in xmas_names))
+
 print(f"\nMonth-3 retention, customers acquired in Nov/Dec : "
       f"{FACTS['xmas_cohort_m3']}%")
 print(f"Month-3 retention, acquired in any other month   : "
       f"{FACTS['nonxmas_cohort_m3']}%")
-print("\nCustomers won during the Christmas rush are markedly worse at coming back.")
-print("The peak season buys volume, not loyalty - a one-off gift buyer looks identical")
-print("to a new wholesale account on the day they order, and very different by month 3.")
+print(f"\nBasis: {FACTS['xmas_cohort_count']} peak cohorts "
+      f"({FACTS['xmas_cohort_names']}) totalling {xmas_n:,} customers, of whom "
+      f"{FACTS['xmas_cohort_retained_m3']} ordered again in month 3, against "
+      f"{FACTS['nonxmas_cohort_count']} off-peak cohorts.")
+print(f"Their month 3 falls in {FACTS['xmas_m3_calendar_months']} - the calendar trough -")
+print("so part of this gap is seasonal demand rather than customer quality, and all of it")
+print("comes from a single Christmas. It is a hypothesis worth testing, not a proven law.")
+print("\nCustomers won during the Christmas rush are markedly worse at coming back in")
+print("this data: a one-off gift buyer looks identical to a new wholesale account on the")
+print("day they order, and very different by month 3.")
 cmp
 ''')
 
@@ -1873,8 +2067,10 @@ Every figure below is computed by the cells above and stored in
 
 ### 1. Revenue is extremely concentrated — segmentation is justified before it is built
 
-**1,170 customers (20%) generate 77.2% of revenue. The top 58 customers (1%)
-generate 31.9%.** The median customer is worth £889 and the mean £2,994 — the
+**1,170 customers (20%) generate 77.2% of identified revenue. The top 58
+customers (1%) generate 31.9%.** Both shares — like every customer-level share
+below — are measured against the £17.53M carried by identified customers, not the
+£20.52M total. The median customer is worth £889 and the mean £2,994 — the
 mean is 3.4x the median, so "the average customer" is a fiction. Order value
 tells the same story: a £517.14 mean against a £303.85 median.
 
@@ -1882,14 +2078,15 @@ This is the finding that licenses everything after it. Uniform treatment of this
 base is guaranteed to be wrong, because it is calibrated to a customer who does
 not exist.
 
-### 2. One segment holds 71.5% of revenue, and one holds the risk
+### 2. One segment holds 71.5% of identified revenue, and one holds the risk
 
 **Champions — 1,555 customers, 26.6% of the base — account for £12.54M, or 71.5%
 of all identified revenue.** At the other end, 945 *Lost* and 714 *Hibernating*
 customers (28.3% of the base together) contribute 3.4% between them.
 
 The urgent group is neither: **683 customers in *Cannot lose them* and *At risk*
-have already spent £1.69M (9.6% of revenue) and have stopped ordering.** These
+have already spent £1.69M (9.6% of identified revenue) and have stopped
+ordering.** These
 are not low-value customers who drifted away — they are proven buyers who went
 quiet, and they are the only group where an intervention has a large, identified
 prize attached.
@@ -1902,16 +2099,25 @@ final day of the log. Net contribution: **£0.00**. The second largest line
 (74,215 ceramic storage jars, £77,183.60) was also cancelled in full.
 
 The consequence is not academic. Ranked on gross revenue, that product is the
-retailer's **3rd** best seller. Ranked net of cancellations it is **5,320th**.
-**Eight of the top ten products change position once returns are netted off.**
+retailer's **4th** best seller. Ranked net of cancellations it is **4,711st** of
+4,725. **Seven of the top ten products change position once returns are netted
+off.**
 Any product report built on gross sales — the default in most tutorials on this
 dataset — is materially wrong at the top of the table.
 
-### 4. Returns cost £1.52M, and the aggregate rate hides the problem
+### 4. Returns cost £738,952, and the aggregate rate hides the problem
 
-Returns total **£1,523,788 across 19,432 lines — 7.43% of gross revenue**, taking
-£20.52M down to a net £18.99M. The monthly rate averages 6.79% but is not stable:
-it **spikes to 19.05% in January 2011**, immediately after the Christmas peak.
+Customer returns total **£738,952 across 18,467 lines — 3.60% of gross revenue**,
+taking £20.52M down to a net £19.78M. The monthly rate averages 2.99% but is not
+stable: it **spikes to 13.30% in January 2011**, immediately after the Christmas
+peak.
+
+The credit notes set aside in step 3 come to £1,523,788, but £784,837 of that is
+administrative — £423,873 of `MANUAL` adjustments, £294,773 of `AMAZONFEE`,
+£36,097 of bank charges, plus discounts, charity lines and samples. Step 7 removes
+those stock codes from the revenue base, so counting them as returns would divide
+one population by another and roughly double the apparent rate. They are reported
+separately in section 9 rather than folded in.
 
 Returns are a post-seasonal event, not a constant leak, so a single annual
 return-rate assumption will under-provision January and over-provision the rest
@@ -1930,35 +2136,63 @@ against the UK's £483.27 — 5.1x** — on a small number of orders. The export
 markets are low-volume and high-value, which is a different business from the
 domestic one and probably deserves different handling.
 
-### 6. Growth came from retained customers, not new ones
+### 6. The existing base carries the revenue but shrank; new customers covered the gap
 
-Like-for-like years grew **8.1%** (£9.56M to £10.32M). But in the second year,
-**91.6% of identified revenue came from customers acquired earlier.** New
-customers contributed the remaining 8.4%.
+On all revenue, like-for-like years grew **8.1%** (£9.56M to £10.32M). Underneath
+that, two different questions get confused, so both are answered on the identified
+base. **Repeat buying dominates the level:** across the twelve full months from
+December 2010 to November 2011, **91.3% of identified revenue came from customers
+who had already ordered in an earlier month.** Only 8.7% came from customers in
+their very first month.
 
-Growth is therefore being produced by the existing base, which raises the cost of
-losing any part of it and makes finding 2's £1.69M at-risk pool the most
-expensive problem on this list.
+**Acquisition, not retention, produced the growth.** Splitting the same window by
+acquisition cohort, identified revenue went from £8,384,041 to £8,627,354 — a rise
+of just **£243,313 (+2.9%)** — and it breaks down as **+£1,491,334 from customers
+first acquired during year 2, against a £1,248,022 decline in the year-1 base.**
+Customers acquired before year 2 still supplied 82.7% of year-2 revenue, but they
+supplied less of it than the year before.
+
+So the existing base is where the money is, and it is leaking. That is a stronger
+reason to care about finding 2's £1.69M at-risk pool than "growth came from
+retention" would have been — the decline is already visible in the totals.
 
 ### 7. Christmas buys volume, not loyalty
 
-Retention settles at roughly a fifth and then holds: **20.5% at month 1, 20.7% at
-month 3, 16.8% at month 6, 16.7% at month 12** (excluding the left-censored first
-cohort). The curve flattens rather than decaying, which is the signature of a
+Retention settles at roughly a fifth and then holds: **20.8% at month 1, 21.0% at
+month 3, 17.3% at month 6, 18.0% at month 12** (excluding the left-censored first
+cohort, and excluding every cell that falls in the file's partial final month). The curve flattens rather than decaying, which is the signature of a
 wholesale reorder cycle rather than one-off consumer purchasing.
 
 Splitting cohorts by acquisition month exposes a sharp difference:
 **customers acquired in November or December retain at 9.3% by month 3, against
-21.9% for customers acquired in any other month — less than half.** The peak
-season that produces the revenue spike produces the retailer's worst customers.
+22.3% for customers acquired in any other month — less than half.** The peak
+season that produces the revenue spike appears to produce the retailer's worst
+customers.
+
+**How thin this one is.** Excluding the left-censored December 2009 row also
+excludes the only other December in the file, so the peak side of that comparison
+is **two cohorts — November 2010 (n=326) and December 2010 (n=76) — 402 customers,
+38 of whom ordered again in month 3** — against 18 off-peak cohorts. All of it comes
+from one Christmas. Their month 3 also lands in February and March 2011, the
+calendar trough, so part of the gap is weak seasonal demand rather than weak
+customers. It is a hypothesis worth a controlled test, not an established
+seasonal law — which is why recommendation 5 asks for a test rather than a
+reallocation of budget.
 
 ### 8. The rules and the algorithm agree, which is the point of running both
 
 K-Means on log-scaled RFM was given no rules, and **every one of the nine
 rule-based segments sends at least 60% of its members to a single cluster**.
 *Cannot lose them* maps 96.7% onto one cluster and *Lost* maps 98.4% onto
-another. Two independent methods recovering the same structure is evidence the
-structure is in the data rather than in the analyst's choice of thresholds.
+another; the weakest is *Loyal* at 60.9%. At customer level, 80.5% of accounts
+sit in their own segment's modal cluster.
+
+What that does and does not prove: the two methods are **not independent
+evidence in the strong sense**, because both read the same three R/F/M features
+off the same rows. What differs is how the boundaries are drawn — fixed quintile
+thresholds against distances in a standardised space. The agreement therefore
+shows the structure does not depend on the thresholds chosen, which is the
+specific thing worth knowing about a hand-built segmentation.
 
 The honest caveat: the silhouette score preferred **k = 2 (0.4376)** over the
 **k = 4 (0.3649)** adopted here. Two clusters cannot be marketed to differently,
@@ -1999,25 +2233,27 @@ anyway, since nothing in this dataset says price caused them to leave.
 
 **Hold back a random 20% as an untreated control group.** Without one, any
 subsequent recovery is indistinguishable from customers who would have reordered
-regardless — and given the flat 16.7% month-12 reorder rate in finding 7, a
+regardless — and given the flat 18.0% month-12 reorder rate in finding 7, a
 meaningful fraction would have.
 
 ### 2. Protect the 1,555 Champions before chasing anyone new
 
-*From findings 2 and 6.* Champions produce **71.5% of revenue**, and **91.6% of
-second-year revenue came from previously-acquired customers**. The concentration
-cuts both ways: losing 58 customers (the top 1%) would remove **31.9% of
-revenue**.
+*From findings 2 and 6.* Champions produce **71.5% of identified revenue**, and
+**82.7% of second-year revenue came from customers acquired before that year
+began**. The concentration cuts both ways: losing 58 customers (the top 1%) would
+remove **31.9% of identified revenue**.
 
 Concretely: guaranteed stock availability on their repeat lines through the
-Sep–Nov peak, and a named contact. The defensive case is stronger than any
-acquisition case on this data, because acquisition is demonstrably not what is
-producing growth.
+Sep–Nov peak, and a named contact. The defensive case is not that the existing
+base is growing — finding 6 shows it fell by **£1,248,022** in year 2 — it is that
+the base still carries five-sixths of the revenue while it declines. Retention
+work here defends a larger number than acquisition work adds, and the £1.69M
+at-risk pool in finding 2 is where that decline is already visible.
 
 ### 3. Stop reporting product performance on gross revenue
 
-*From finding 3.* Eight of the top ten products change rank once cancellations
-are netted off, and the gross-rank-3 product is genuinely 5,320th. Every product
+*From finding 3.* Seven of the top ten products change rank once cancellations
+are netted off, and the gross-rank-4 product is genuinely 4,711th. Every product
 report should net cancellations against the original sale.
 
 This is a reporting fix, not a strategy: it costs nothing and it stops the buying
@@ -2025,7 +2261,7 @@ team restocking a line that sold nothing.
 
 ### 4. Treat January as a returns event and investigate the top returned lines
 
-*From finding 4.* The return rate hits **19.05% in January 2011** against a 6.79%
+*From finding 4.* The return rate hits **13.30% in January 2011** against a 2.99%
 average. Two actions follow: provision warehouse and refund capacity for a
 post-Christmas spike rather than an even monthly rate, and inspect the
 concentrated returned lines in section 9 for a cause — the data shows *which*
@@ -2035,13 +2271,16 @@ warehouse, not one to answer from the file.
 ### 5. Change what the Christmas peak is expected to deliver
 
 *From finding 7.* Customers acquired in November–December retain at **9.3% by
-month 3 versus 21.9%** otherwise. The peak should be run as a volume and
-cash-generation event, and peak-acquired customers should **not** be counted as
-new relationships in any target that assumes they behave like the rest of the
-base.
+month 3 versus 22.3%** otherwise — on two peak cohorts totalling 402 customers
+from a single Christmas, whose month 3 falls in the calendar trough.
 
-The corollary is to spend acquisition budget outside the peak, where the customers
-who arrive are more than twice as likely to still be buying at month 3.
+That evidence supports a **test**, not a budget reallocation. Tag peak-acquired
+customers on arrival and measure their month-3 reorder rate against an off-peak
+control over the next season; if the gap holds on a second Christmas with the
+seasonal effect controlled for, then move acquisition spend out of the peak.
+Meanwhile the safe half of this is free: stop counting peak-acquired customers as
+new relationships in any target that assumes they behave like the rest of the
+base, and run the peak as a volume and cash-generation event.
 
 ### 6. Test the export markets deliberately
 
@@ -2073,9 +2312,10 @@ work.
   campaign data and no experiment in this file. That is why recommendation 1
   specifies a control group.
 * **Any conclusion about when customers prefer to shop** — see finding 9.
-* **Using the 12-month CLV projection as a forecast.** It sums to 2.43x actual
-  second-year revenue (section 13.1). It is an upper bound per account, nothing
-  more.
+* **Using the 12-month CLV projection as a forecast.** Summed across the base it
+  is an upper bound on second-year revenue (section 13.1) — for one accelerating
+  account the same constant-rate assumption is conservative, so it is not a
+  per-account ceiling.
 ''')
 
 md(r'''
@@ -2098,7 +2338,9 @@ Stating what this analysis cannot support is part of the analysis.
 3. **The CLV projection is demonstrably biased upward, and section 13.1 shows by
    how much.** Summed across the base it exceeds actual second-year revenue by a
    wide margin, and it ranks a dormant segment above Champions. It carries no
-   churn probability, so it should be read only as a per-customer upper bound.
+   churn probability, so it should be read only as an aggregate upper bound — the
+   constant-rate assumption is optimistic for a dormant account and conservative
+   for an accelerating one, so it is not a ceiling on any single customer.
    BG/NBD plus a Gamma-Gamma spend model is the correct fix and is not done here;
    prioritisation in section 16 therefore rests on historical value, not on the
    projection.
@@ -2124,6 +2366,23 @@ Stating what this analysis cannot support is part of the analysis.
 9. **Segments are descriptive, not causal.** Nothing here establishes that a
    campaign *causes* a customer to return. A holdout test would be needed to
    claim that, and this dataset contains no campaign data.
+10. **The Christmas retention gap rests on one season.** Excluding the
+    left-censored December 2009 row also removes the only other December in the
+    file, so the peak side of the 9.3%-versus-22.3% comparison is two cohorts —
+    November and December 2010, 402 customers between them, 38 of whom reordered
+    at month 3. Their month 3 falls in the February–March trough, so seasonal
+    demand and customer quality are confounded and this data cannot separate
+    them. Finding 7 is a hypothesis to test, and recommendation 5 is written as
+    a test rather than a decision.
+11. **The return rate depends on which credit notes count as returns.** The
+    3.60% figure counts customer returns of products and carriage only, so that
+    its numerator and the gross-revenue denominator describe the same
+    population. Including the administrative reversals — manual adjustments,
+    Amazon fees, bank charges, discounts, samples — would give 7.43% on
+    £1,523,788, but those stock codes are removed from the revenue base by
+    cleaning step 7 and are not customers sending goods back. Both numbers are
+    reported in section 9; neither is the single "true" rate without saying
+    which question is being asked.
 ''')
 
 code(r'''
