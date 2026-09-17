@@ -70,23 +70,32 @@ Columns: `Invoice`, `StockCode`, `Description`, `Quantity`, `InvoiceDate`, `Pric
 |---|---|
 | Clean revenue analysed | **£20,517,554** across 39,675 orders |
 | Identified customers | 5,854 (85.4% of clean revenue is attributable) |
-| Revenue from the top 20% of customers | **77.2%** (1,170 customers) |
-| Revenue from the top 1% of customers | **31.9%** (58 customers) |
-| Champions segment | 1,555 customers (26.6%) → **71.5% of revenue** |
+| Revenue from the top 20% of customers | **77.2% of identified revenue** (1,170 customers) |
+| Revenue from the top 1% of customers | **31.9% of identified revenue** (58 customers) |
+| Champions segment | 1,555 customers (26.6%) → **71.5% of identified revenue** (£12.54M) |
 | High-value customers who have stopped ordering | **683 accounts, £1,689,620** |
-| Second-year revenue from previously-acquired customers | **91.6%** |
-| Returns | £1,523,788 = **7.43%** of gross, spiking to 19.05% in January 2011 |
+| Second-year revenue from customers acquired before that year | **82.7%** — but that base *fell* £1,248,022; new cohorts covered the gap |
+| Returns | £738,952 = **3.60%** of gross, spiking to 13.30% in January 2011 |
+| Administrative credit notes, reported separately | £784,837 — excluded from the return rate because their stock codes are absent from the denominator |
 | Largest line in the dataset | £168,469.60 — **cancelled 12 minutes later**, net £0.00 |
-| Products whose rank changes net of returns | **8 of the top 10** |
-| Christmas-acquired retention at month 3 | **9.3%** vs 21.9% for every other month |
-| RFM segments that map onto a single K-Means cluster (≥60%) | **9 of 9** |
+| Products whose rank changes net of returns | **7 of the top 10** |
+| Christmas-acquired retention at month 3 | **9.3%** vs 22.3% elsewhere — but only 2 cohorts, 402 customers, one season |
+| RFM segments that map onto a single K-Means cluster (≥60%) | **9 of 9**; 80.5% of customers land in their segment's modal cluster |
 
 Three of these contradict what a first pass at this dataset produces: the largest "sale"
-was a cancellation, so gross product rankings are wrong at the top; peak-season customers
-retain at less than half the rate of everyone else; and `InvoiceDate` records back-office
-keying rather than customer intent, which invalidates any "best day to advertise"
-conclusion. Each was found by checking a claim against the data instead of accepting a
-plausible number.
+was a cancellation, so gross product rankings are wrong at the top; the identified base
+that supplies 82.7% of second-year revenue *shrank* by £1.25M while the headline grew; and
+`InvoiceDate` records back-office keying rather than customer intent, which invalidates any
+"best day to advertise" conclusion. Each was found by checking a claim against the data
+instead of accepting a plausible number.
+
+Two of the numbers above are deliberately reported with their weaknesses attached rather
+than as headlines. The return rate is 3.60% only because the administrative credit notes
+are held out of the numerator — count them and the same data gives 7.43%, which is a
+different question, not a better answer. And the Christmas retention gap rests on two
+cohorts totalling 402 customers whose month-3 window happens to fall in the February–March
+revenue trough, so it is a lead to test, not a settled seasonal law. Sections 7.7, 11.2 and
+14 of the report state both in full.
 
 ---
 
@@ -137,8 +146,8 @@ download itself:
 
 | Run | Time |
 |---|---|
-| First run — parses both `.xlsx` sheets and writes a CSV cache | **1 min 28 s** |
-| Every later run — reads the CSV cache | **33 s** |
+| First run — parses both `.xlsx` sheets and writes a CSV cache | **1 min 13 s** |
+| Every later run — reads the CSV cache | **27 s** |
 
 Deleting `data/online_retail_II.csv` forces the workbook to be re-parsed; doing that
 reproduced a byte-identical cache (same SHA-256), so the cache is not a source of drift.
@@ -169,7 +178,7 @@ python tools/build_report.py
 
 | Path | What it is |
 |---|---|
-| [AryanVerma_RetailCustomerSegmentationAnalysis.ipynb](AryanVerma_RetailCustomerSegmentationAnalysis.ipynb) | **The analysis.** 75 cells, all executed, no errors, 14 figures. |
+| [AryanVerma_RetailCustomerSegmentationAnalysis.ipynb](AryanVerma_RetailCustomerSegmentationAnalysis.ipynb) | **The analysis.** 77 cells, all executed, no errors, 14 figures. |
 | [requirements.txt](requirements.txt) | Dependencies, with the version each was verified on. |
 | [AryanVerma_ProjectReport.docx](AryanVerma_ProjectReport.docx) | **The report.** 17 sections, 14 figures, 15 tables. |
 | [README.md](README.md) | This file. |
@@ -203,6 +212,13 @@ if a fact or a figure it needs is missing rather than emitting a blank.
   adjustment. Merging the two would overstate the customer return rate. Six `A`-prefixed
   invoices carry −£147,614 of bad debt that the common "drop invoices starting with C"
   recipe leaves in the revenue line.
+* **The return rate counts the same population on both sides.** Credit notes are split off
+  at cleaning step 3, which is *before* step 7 drops the administrative stock codes — so
+  the raw credit-note total still holds reversals of `MANUAL`, `AMAZONFEE`, bank charges,
+  discounts and samples. Those codes are absent from the gross-revenue denominator, so
+  leaving them in the numerator divides one population by another: £1,523,788 / £20.52M =
+  7.43%. Removing them gives £738,952 / £20.52M = **3.60%**, and the £784,837 of
+  administrative reversals is reported in its own right instead.
 * **Two analysis bases are carried deliberately.** `sales` (all valid revenue lines,
   including guest checkouts) is used for revenue, products, geography and returns;
   `sales_id` (known customer ID only) is used for RFM, K-Means, CLV and cohorts, because
@@ -211,8 +227,11 @@ if a fact or a figure it needs is missing rather than emitting a blank.
   preferred `k = 2` (0.4376 against 0.3649). Two clusters cannot be marketed to
   differently, so interpretability was chosen over the metric and the cost is reported
   rather than hidden.
-* **The 12-month CLV projection is an upper bound, not a forecast.** Summed across the
-  base it is 2.43× actual second-year revenue, and it ranks a dormant segment above
+* **The 12-month CLV projection is an aggregate upper bound, not a forecast.** Compared
+  like for like — projected value for identified customers against the revenue those
+  customers actually produced in the second year — it is **2.91×** too high (2.43× against
+  the whole revenue line, including the guest checkouts the model never sees, which is the
+  more flattering and less meaningful comparison). It also ranks a dormant segment above
   Champions. Every prioritisation decision in the report therefore rests on *historical*
   value, which is measured.
 
@@ -227,7 +246,7 @@ if a fact or a figure it needs is missing rather than emitting a blank.
   time, not a purchase time.
 * **Using the CLV projection as a forecast.**
 
-The report states all nine limitations in full, including the attribution gap: 22.9% of
+The report states all eleven limitations in full, including the attribution gap: 22.9% of
 clean sales lines, carrying 14.6% of clean revenue, have no customer ID and are invisible
 to every customer-level model here.
 
