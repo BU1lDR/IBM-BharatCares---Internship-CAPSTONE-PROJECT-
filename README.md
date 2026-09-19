@@ -126,8 +126,8 @@ Developed and run on **Python 3.14.6** (Windows 11). The version bounds in
 actually exercised.
 
 ```bash
-git clone https://github.com/BU1lDR/IBM-BharatCares---Internship-CAPSTONE-PROJECT-.git
-cd IBM-BharatCares---Internship-CAPSTONE-PROJECT-
+git clone https://github.com/BU1lDR/retail-customer-segmentation.git
+cd retail-customer-segmentation
 
 python -m venv .venv
 # Windows
@@ -158,6 +158,14 @@ To regenerate the Word report from the notebook's outputs:
 
 ```bash
 python tools/build_report.py
+```
+
+The report records a build date, so two runs on different days differ in that one
+respect. Pin it and the `.docx` comes out byte-identical — verified by building
+twice and comparing SHA-256:
+
+```bash
+SOURCE_DATE_EPOCH=1700000000 python tools/build_report.py
 ```
 
 ### Troubleshooting
